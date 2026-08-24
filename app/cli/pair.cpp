@@ -47,6 +47,7 @@ public:
     void handleEvent(Event event)
     {
         Q_Q(Launcher);
+        const bool lolaHeadless = !qEnvironmentVariableIsEmpty("LOLA_PAIRING_PIN");
 
         switch (event.type) {
         // Occurs when CliPair becomes visible and the UI calls launcher's execute()
@@ -78,7 +79,12 @@ public:
                 if (event.computer->pairState == NvComputer::PS_PAIRED) {
                     m_State = StateFailure;
                     QString msg = QObject::tr("%1 is already paired").arg(event.computer->name);
-                    emit q->failed(msg);
+                    if (lolaHeadless) {
+                        QCoreApplication::exit(1);
+                    }
+                    else {
+                        emit q->failed(msg);
+                    }
                 }
                 else {
                     Q_ASSERT(!m_PredefinedPin.isEmpty());
@@ -94,11 +100,21 @@ public:
             if (m_State == StatePairing) {
                 if (event.errorMessage.isEmpty()) {
                     m_State = StateComplete;
-                    emit q->success();
+                    if (lolaHeadless) {
+                        QCoreApplication::exit(0);
+                    }
+                    else {
+                        emit q->success();
+                    }
                 }
                 else {
                     m_State = StateFailure;
-                    emit q->failed(event.errorMessage);
+                    if (lolaHeadless) {
+                        QCoreApplication::exit(1);
+                    }
+                    else {
+                        emit q->failed(event.errorMessage);
+                    }
                 }
             }
             break;
@@ -106,7 +122,12 @@ public:
         case Event::Timedout:
             if (m_State == StateSeekComputer) {
                 m_State = StateFailure;
-                emit q->failed(QObject::tr("Failed to connect to %1").arg(m_ComputerName));
+                if (lolaHeadless) {
+                    QCoreApplication::exit(1);
+                }
+                else {
+                    emit q->failed(QObject::tr("Failed to connect to %1").arg(m_ComputerName));
+                }
             }
             break;
         }
