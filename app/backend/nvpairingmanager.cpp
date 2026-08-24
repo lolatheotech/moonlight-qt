@@ -355,6 +355,16 @@ NvPairingManager::pair(QString appVersion, QString pin, QSslCertificate& serverC
         return PairState::FAILED;
     }
 
+    // Apollo activates the newly authorized client certificate after stage 4.
+    // The LoLa headless path has already verified the server signature and PIN,
+    // and validates the enrolled certificate with a fresh authenticated request.
+    // Avoid reusing this pairing connection for the legacy stage-5 challenge.
+    if (!qEnvironmentVariableIsEmpty("LOLA_PAIRING_PIN"))
+    {
+        serverCert = std::move(unverifiedServerCert);
+        return PairState::PAIRED;
+    }
+
     QString pairChallengeXml = m_Http.openConnectionToString(m_Http.m_BaseUrlHttps,
                                                              "pair",
                                                              "devicename=roth&updateState=1&phrase=pairchallenge",
