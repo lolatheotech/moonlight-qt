@@ -93,6 +93,14 @@ void Session::clConnectionTerminated(int errorCode)
     // Display the termination dialog if this was not intended
     switch (errorCode) {
     case ML_ERROR_GRACEFUL_TERMINATION:
+        // Apollo reports an involuntary host shutdown/loss using the protocol's
+        // graceful-termination reason. In a LoLa-supervised session, local user
+        // shutdown is handled by the local SDL exit path, so a remote callback
+        // carrying this reason must trigger the supervisor's bounded reconnect.
+        // Keep upstream GUI behaviour unchanged outside LoLa sessions.
+        if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
+            s_ActiveSession->m_UnexpectedTermination = true;
+        }
         break;
 
     case ML_ERROR_NO_VIDEO_TRAFFIC:
