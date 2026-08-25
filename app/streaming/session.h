@@ -136,7 +136,7 @@ signals:
 
     void quitStarting();
 
-    void sessionFinished(int portTestResult);
+    void sessionFinished(int portTestResult, bool unexpectedTermination);
 
     // Emitted after sessionFinished() when the session is ready to be destroyed
     void readyForDeletion();

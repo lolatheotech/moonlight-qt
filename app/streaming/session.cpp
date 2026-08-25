@@ -1280,7 +1280,8 @@ private:
             emit m_Session->quitStarting();
         }
         else {
-            emit m_Session->sessionFinished(m_Session->m_PortTestResults);
+            emit m_Session->sessionFinished(m_Session->m_PortTestResults,
+                                             m_Session->m_UnexpectedTermination);
         }
 
         // The video decoder must already be destroyed, since it could
@@ -1303,7 +1304,8 @@ private:
             }
 
             // Session is finished now
-            emit m_Session->sessionFinished(m_Session->m_PortTestResults);
+            emit m_Session->sessionFinished(m_Session->m_PortTestResults,
+                                             m_Session->m_UnexpectedTermination);
         }
 
         // Exit the entire program if requested
