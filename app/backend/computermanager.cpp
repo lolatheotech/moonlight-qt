@@ -366,7 +366,7 @@ void ComputerManager::startPolling()
         return;
     }
 
-    if (m_Prefs->enableMdns) {
+    if (m_Prefs->enableMdns && !qEnvironmentVariableIsSet("LOLA_DISABLE_MDNS")) {
         // Start an MDNS query for GameStream hosts
         m_MdnsServer.reset(new QMdnsEngine::Server());
         m_MdnsBrowser = new QMdnsEngine::Browser(m_MdnsServer.data(), "_nvstream._tcp.local.");
