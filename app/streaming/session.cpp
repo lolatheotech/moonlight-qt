@@ -1845,6 +1845,9 @@ void Session::exec()
 #else
     std::string windowName = QString(m_Computer->name + " - Moonlight").toStdString();
 #endif
+    if (qEnvironmentVariableIsSet("LOLA_BRANDED_SESSION")) {
+        windowName = "LoLa Remote Desktop";
+    }
 
     m_Window = SDL_CreateWindow(windowName.c_str(),
                                 x,
