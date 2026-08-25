@@ -297,6 +297,29 @@ NvHTTP::getDisplayModeList(QString serverInfo)
     return modes;
 }
 
+QString
+NvHTTP::getClipboardText()
+{
+    return openConnectionToString(m_BaseUrlHttps,
+                                  "actions/clipboard",
+                                  "type=text",
+                                  1000,
+                                  NvLogLevel::NVLL_ERROR);
+}
+
+void
+NvHTTP::setClipboardText(const QString& content)
+{
+    QNetworkReply* reply = openConnection(m_BaseUrlHttps,
+                                          "actions/clipboard",
+                                          "type=text",
+                                          1000,
+                                          NvLogLevel::NVLL_ERROR,
+                                          true,
+                                          content.toUtf8());
+    delete reply;
+}
+
 QVector<NvApp>
 NvHTTP::getAppList()
 {
@@ -483,7 +506,9 @@ NvHTTP::openConnection(QUrl baseUrl,
                        QString command,
                        QString arguments,
                        int timeoutMs,
-                       NvLogLevel logLevel)
+                       NvLogLevel logLevel,
+                       bool post,
+                       const QByteArray& body)
 {
     // Port must be set
     Q_ASSERT(baseUrl.port(0) != 0);
@@ -515,7 +540,7 @@ NvHTTP::openConnection(QUrl baseUrl,
 #endif
 
     auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
-    QNetworkReply* reply = m_Nam->get(request);
+    QNetworkReply* reply = post ? m_Nam->post(request, body) : m_Nam->get(request);
 
     // Run the request with a timeout if requested
     QEventLoop loop;

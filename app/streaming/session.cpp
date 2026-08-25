@@ -2,6 +2,7 @@
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
+#include "backend/nvhttp.h"
 
 #include <Limelight.h>
 #include "SDL_compat.h"
@@ -1756,8 +1757,45 @@ void Session::setShouldExit(bool quitHostApp)
     m_ShouldExit = true;
 }
 
+void Session::syncClipboard()
+{
+    constexpr int kMaxBytes = 1024 * 1024;
+    char* raw = SDL_GetClipboardText();
+    QByteArray local = raw ? QByteArray(raw) : QByteArray();
+    SDL_free(raw);
+    try {
+        NvHTTP http(m_Computer);
+        QByteArray host = http.getClipboardText().toUtf8();
+        if (!m_ClipboardInitialized) {
+            m_LastLocalClipboard = local;
+            m_LastHostClipboard = host;
+            m_ClipboardInitialized = true;
+            return;
+        }
+        const bool localChanged = local != m_LastLocalClipboard;
+        const bool hostChanged = host != m_LastHostClipboard;
+        if (localChanged && local.size() <= kMaxBytes) {
+            http.setClipboardText(QString::fromUtf8(local));
+            m_LastLocalClipboard = m_LastHostClipboard = local;
+        } else if (hostChanged && host.size() <= kMaxBytes) {
+            if (SDL_SetClipboardText(host.constData()) == 0)
+                m_LastLocalClipboard = m_LastHostClipboard = host;
+        } else {
+            m_LastLocalClipboard = local;
+            m_LastHostClipboard = host;
+        }
+    } catch (const std::exception& e) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa clipboard synchronization unavailable: %s", e.what());
+    }
+}
+
 void Session::start()
 {
+    m_ClipboardSyncEnabled = qEnvironmentVariableIntValue("LOLA_CLIPBOARD_SYNC") == 1;
+    m_ClipboardInitialized = false;
+    m_NextClipboardSyncTick = 0;
+
     // Wait for any old session to finish cleanup
     s_ActiveSessionSemaphore.acquire();
 
@@ -1977,6 +2015,10 @@ void Session::exec()
     // because we want to suspend all Qt processing until the stream is over.
     SDL_Event event;
     for (;;) {
+        if (m_ClipboardSyncEnabled && SDL_TICKS_PASSED(SDL_GetTicks(), m_NextClipboardSyncTick)) {
+            syncClipboard();
+            m_NextClipboardSyncTick = SDL_GetTicks() + 1000;
+        }
 #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
         // SDL 2.0.18 has a proper wait event implementation that uses platform
         // support to block on events rather than polling on Windows, macOS, X11,

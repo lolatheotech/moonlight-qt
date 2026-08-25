@@ -146,6 +146,8 @@ signals:
 private:
     void exec();
 
+    void syncClipboard();
+
     bool startConnectionAsync();
 
     bool validateLaunch(SDL_Window* testWindow);
@@ -264,6 +266,11 @@ private:
     int m_FlushingWindowEventsRef;
     QStringList m_LaunchWarnings;
     bool m_ShouldExit;
+    bool m_ClipboardSyncEnabled = false;
+    bool m_ClipboardInitialized = false;
+    Uint32 m_NextClipboardSyncTick = 0;
+    QByteArray m_LastLocalClipboard;
+    QByteArray m_LastHostClipboard;
 
     bool m_AsyncConnectionSuccess;
     int m_PortTestResults;
