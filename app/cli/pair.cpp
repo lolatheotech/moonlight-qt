@@ -101,7 +101,12 @@ public:
                 if (event.errorMessage.isEmpty()) {
                     m_State = StateComplete;
                     if (lolaHeadless) {
-                        QCoreApplication::exit(0);
+                        // Host persistence is performed by ComputerManager's
+                        // delayed flush thread. Keep the event loop alive until
+                        // the pinned certificate has reached durable settings.
+                        QTimer::singleShot(1000, []() {
+                            QCoreApplication::exit(0);
+                        });
                     }
                     else {
                         emit q->success();
