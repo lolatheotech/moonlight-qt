@@ -23,12 +23,28 @@ void ComputerSeeker::start(int timeout)
 {
     m_TimeoutTimer->start(timeout);
 
+    NvComputer* matchingComputer = findMatchingComputer();
+
+    // A CLI-supplied manual endpoint is authoritative. Prefer it over stale
+    // local/mDNS addresses learned during pairing, which may be unreachable
+    // from a remote LoLa client.
+    if (matchingComputer) {
+        const QString requestedAddress = m_ComputerName.toLower();
+        const NvAddress manualAddress = matchingComputer->manualAddress;
+        if (!manualAddress.isNull() &&
+                (manualAddress.address().toLower() == requestedAddress ||
+                 manualAddress.toString().toLower() == requestedAddress)) {
+            QWriteLocker lock(&matchingComputer->lock);
+            matchingComputer->activeAddress = manualAddress;
+        }
+    }
+
     // If we don't know this computer by name, address, or UUID, try adding it
     // manually and see if we can find it by address, hostname, or mDNS.
     //
     // NB: We don't do this unconditionally because it will wipe out the user's
     // manual address if they pass another reachable hostname/address.
-    if (!findMatchingComputer()) {
+    if (!matchingComputer) {
         m_ComputerManager->addNewHostManually(m_ComputerName);
     }
 
