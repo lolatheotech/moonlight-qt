@@ -300,11 +300,24 @@ NvHTTP::getDisplayModeList(QString serverInfo)
 QString
 NvHTTP::getClipboardText()
 {
-    return openConnectionToString(m_BaseUrlHttps,
-                                  "actions/clipboard",
-                                  "type=text",
-                                  1000,
-                                  NvLogLevel::NVLL_ERROR);
+    QNetworkReply* reply = openConnection(m_BaseUrlHttps,
+                                          "actions/clipboard",
+                                          "type=text",
+                                          1000,
+                                          NvLogLevel::NVLL_ERROR);
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    qInfo() << "LoLa clipboard GET completed with HTTP status" << status;
+
+    QTextStream stream(reply);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    stream.setEncoding(QStringConverter::Utf8);
+#else
+    stream.setCodec("UTF-8");
+#endif
+
+    const QString content = stream.readAll();
+    delete reply;
+    return content;
 }
 
 void
@@ -317,6 +330,8 @@ NvHTTP::setClipboardText(const QString& content)
                                           NvLogLevel::NVLL_ERROR,
                                           true,
                                           content.toUtf8());
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    qInfo() << "LoLa clipboard POST completed with HTTP status" << status;
     delete reply;
 }
 
