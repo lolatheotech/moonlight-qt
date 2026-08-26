@@ -212,6 +212,17 @@ NvHTTP::startApp(QString verb,
     memcpy(&riKeyId, streamConfig->remoteInputAesIv, sizeof(riKeyId));
     riKeyId = qFromBigEndian(riKeyId);
 
+    QString lolaMonitorQuery;
+    bool monitorIndexOk = false;
+    bool monitorCountOk = false;
+    const auto monitorIndex = qEnvironmentVariableIntValue("LOLA_MONITOR_INDEX", &monitorIndexOk);
+    const auto monitorCount = qEnvironmentVariableIntValue("LOLA_MONITOR_COUNT", &monitorCountOk);
+    if (monitorIndexOk && monitorCountOk && monitorCount > 0 && monitorCount <= 8 &&
+            monitorIndex >= 0 && monitorIndex < monitorCount) {
+        lolaMonitorQuery = "&lola_monitor_index=" + QString::number(monitorIndex) +
+                           "&lola_monitor_count=" + QString::number(monitorCount);
+    }
+
     QString response =
             openConnectionToString(m_BaseUrlHttps,
                                    verb,
@@ -234,7 +245,8 @@ NvHTTP::startApp(QString verb,
                                    "&remoteControllersBitmap="+QString::number(gamepadMask)+
                                    "&gcmap="+QString::number(gamepadMask)+
                                    "&gcpersist="+QString::number(persistGameControllersOnDisconnect ? 1 : 0)+
-                                   LiGetLaunchUrlQueryParameters(),
+                                   LiGetLaunchUrlQueryParameters()+
+                                   lolaMonitorQuery,
                                    LAUNCH_TIMEOUT_MS);
 
     qInfo() << "Launch response:" << response;
@@ -248,6 +260,7 @@ NvHTTP::startApp(QString verb,
 void
 NvHTTP::quitApp()
 {
+
     QString response =
             openConnectionToString(m_BaseUrlHttps,
                                    "cancel",
