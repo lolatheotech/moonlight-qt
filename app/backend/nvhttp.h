@@ -175,6 +175,9 @@ public:
     QString
     getClipboardText();
 
+    QString
+    getCursorMetadata(int monitorIndex);
+
     void
     setClipboardText(const QString& content);
 

@@ -32,6 +32,8 @@
 
 #include <openssl/rand.h>
 
+#include <limits>
+
 #include <QtEndian>
 #include <QCoreApplication>
 #include <QThreadPool>
@@ -40,6 +42,8 @@
 #include <QImage>
 #include <QGuiApplication>
 #include <QCursor>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QScreen>
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -1790,14 +1794,75 @@ void Session::syncClipboard()
     }
 }
 
+void Session::syncCursor()
+{
+    try {
+        NvHTTP http(m_Computer);
+        const auto document = QJsonDocument::fromJson(http.getCursorMetadata(m_CursorMonitorIndex).toUtf8());
+        if (!document.isObject()) {
+            throw std::runtime_error("invalid cursor metadata JSON");
+        }
+
+        const auto cursor = document.object();
+        if (cursor.value("schemaVersion").toInt() != 1 ||
+                cursor.value("monitorIndex").toInt(-1) != m_CursorMonitorIndex) {
+            throw std::runtime_error("invalid cursor metadata contract");
+        }
+
+        const auto sequence = cursor.value("sequence").toVariant().toULongLong();
+        const auto shape = cursor.value("shape").toString();
+        const bool visible = cursor.value("visible").toBool(false);
+        if (sequence != m_LastCursorSequence) {
+            SDL_SystemCursor systemCursor = SDL_SYSTEM_CURSOR_ARROW;
+            if (shape == "ibeam") systemCursor = SDL_SYSTEM_CURSOR_IBEAM;
+            else if (shape == "wait") systemCursor = SDL_SYSTEM_CURSOR_WAIT;
+            else if (shape == "crosshair") systemCursor = SDL_SYSTEM_CURSOR_CROSSHAIR;
+            else if (shape == "size_nwse") systemCursor = SDL_SYSTEM_CURSOR_SIZENWSE;
+            else if (shape == "size_nesw") systemCursor = SDL_SYSTEM_CURSOR_SIZENESW;
+            else if (shape == "size_we") systemCursor = SDL_SYSTEM_CURSOR_SIZEWE;
+            else if (shape == "size_ns") systemCursor = SDL_SYSTEM_CURSOR_SIZENS;
+            else if (shape == "size_all") systemCursor = SDL_SYSTEM_CURSOR_SIZEALL;
+            else if (shape == "forbidden") systemCursor = SDL_SYSTEM_CURSOR_NO;
+            else if (shape == "hand") systemCursor = SDL_SYSTEM_CURSOR_HAND;
+            else if (shape == "busy") systemCursor = SDL_SYSTEM_CURSOR_WAITARROW;
+
+            SDL_Cursor* replacement = SDL_CreateSystemCursor(systemCursor);
+            if (replacement != nullptr) {
+                SDL_SetCursor(replacement);
+                if (m_RemoteCursor != nullptr) {
+                    SDL_FreeCursor(m_RemoteCursor);
+                }
+                m_RemoteCursor = replacement;
+                m_LastCursorSequence = sequence;
+            }
+        }
+        SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);
+    }
+    catch (const std::exception& e) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa cursor synchronization unavailable: %s", e.what());
+        SDL_ShowCursor(SDL_ENABLE);
+    }
+}
+
 void Session::start()
 {
     m_ClipboardSyncEnabled = qEnvironmentVariableIntValue("LOLA_CLIPBOARD_SYNC") == 1;
     m_ClipboardInitialized = false;
     m_NextClipboardSyncTick = 0;
+    m_CursorSyncEnabled = false;
+    m_CursorMonitorIndex = 0;
+    m_LastCursorSequence = std::numeric_limits<quint64>::max();
+    m_NextCursorSyncTick = 0;
 
     if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
         const auto mouseMode = qEnvironmentVariable("LOLA_MOUSE_MODE").trimmed().toLower();
+        bool monitorIndexOk = false;
+        const auto monitorIndex = qEnvironmentVariableIntValue("LOLA_MONITOR_INDEX", &monitorIndexOk);
+        if (mouseMode == "desktop" && monitorIndexOk && monitorIndex >= 0 && monitorIndex <= 15) {
+            m_CursorSyncEnabled = true;
+            m_CursorMonitorIndex = monitorIndex;
+        }
         if (mouseMode == "immersion") {
             m_Preferences->absoluteMouseMode = false;
         }
@@ -2032,6 +2097,10 @@ void Session::exec()
         if (m_ClipboardSyncEnabled && SDL_TICKS_PASSED(SDL_GetTicks(), m_NextClipboardSyncTick)) {
             syncClipboard();
             m_NextClipboardSyncTick = SDL_GetTicks() + 1000;
+        }
+        if (m_CursorSyncEnabled && SDL_TICKS_PASSED(SDL_GetTicks(), m_NextCursorSyncTick)) {
+            syncCursor();
+            m_NextCursorSyncTick = SDL_GetTicks() + 250;
         }
 #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
         // SDL 2.0.18 has a proper wait event implementation that uses platform
@@ -2429,6 +2498,11 @@ DispatchDeferredCleanup:
             m_QtWindow->setWindowState(Qt::WindowNoState);
         }
 #endif
+    }
+
+    if (m_RemoteCursor != nullptr) {
+        SDL_FreeCursor(m_RemoteCursor);
+        m_RemoteCursor = nullptr;
     }
 
     // This must be called after the decoder is deleted, because

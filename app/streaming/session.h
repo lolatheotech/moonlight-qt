@@ -148,6 +148,8 @@ private:
 
     void syncClipboard();
 
+    void syncCursor();
+
     bool startConnectionAsync();
 
     bool validateLaunch(SDL_Window* testWindow);
@@ -271,6 +273,11 @@ private:
     Uint32 m_NextClipboardSyncTick = 0;
     QByteArray m_LastLocalClipboard;
     QByteArray m_LastHostClipboard;
+    bool m_CursorSyncEnabled = false;
+    int m_CursorMonitorIndex = 0;
+    quint64 m_LastCursorSequence = 0;
+    Uint32 m_NextCursorSyncTick = 0;
+    SDL_Cursor* m_RemoteCursor = nullptr;
 
     bool m_AsyncConnectionSuccess;
     int m_PortTestResults;

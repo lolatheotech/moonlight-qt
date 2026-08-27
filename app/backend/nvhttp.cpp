@@ -320,6 +320,16 @@ NvHTTP::getClipboardText()
                                   NvLogLevel::NVLL_ERROR);
 }
 
+QString
+NvHTTP::getCursorMetadata(int monitorIndex)
+{
+    return openConnectionToString(m_BaseUrlHttps,
+                                  "actions/cursor",
+                                  "monitor=" + QString::number(monitorIndex),
+                                  500,
+                                  NvLogLevel::NVLL_ERROR);
+}
+
 void
 NvHTTP::setClipboardText(const QString& content)
 {
