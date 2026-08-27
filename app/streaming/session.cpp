@@ -1796,6 +1796,20 @@ void Session::start()
     m_ClipboardInitialized = false;
     m_NextClipboardSyncTick = 0;
 
+    if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
+        const auto mouseMode = qEnvironmentVariable("LOLA_MOUSE_MODE").trimmed().toLower();
+        if (mouseMode == "immersion") {
+            m_Preferences->absoluteMouseMode = false;
+        }
+        else {
+            // Desktop and Compatibility use display-relative absolute coordinates.
+            // Unknown or missing values fail safely to Compatibility semantics.
+            m_Preferences->absoluteMouseMode = true;
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa mouse mode: %s",
+                    mouseMode.isEmpty() ? "compatibility" : mouseMode.toUtf8().constData());
+    }
+
     // Wait for any old session to finish cleanup
     s_ActiveSessionSemaphore.acquire();
 
