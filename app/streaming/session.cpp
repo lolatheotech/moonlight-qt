@@ -1,4 +1,68 @@
 #include "session.h"
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <SDL_syswm.h>
+#endif
+
+#ifdef Q_OS_WIN
+static constexpr wchar_t LoLaCursorProperty[] = L"LoLaCursorHandle";
+static constexpr wchar_t LoLaCursorProcProperty[] = L"LoLaCursorOldWndProc";
+static constexpr wchar_t LoLaCursorVisibleProperty[] = L"LoLaCursorVisible";
+
+static LRESULT CALLBACK LoLaCursorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT) {
+        const auto visibility = reinterpret_cast<std::uintptr_t>(GetPropW(hwnd, LoLaCursorVisibleProperty));
+        if (visibility == 2) {
+            SetCursor(nullptr);
+            return TRUE;
+        }
+        const auto cursor = reinterpret_cast<HCURSOR>(GetPropW(hwnd, LoLaCursorProperty));
+        if (visibility == 1 && cursor != nullptr) {
+            SetCursor(cursor);
+            return TRUE;
+        }
+    }
+    const auto previous = reinterpret_cast<WNDPROC>(GetPropW(hwnd, LoLaCursorProcProperty));
+    return previous ? CallWindowProcW(previous, hwnd, message, wParam, lParam)
+                    : DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+static void SetLoLaWindowCursor(SDL_Window* window, HCURSOR cursor, bool visible)
+{
+    SDL_SysWMinfo info {};
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return;
+    const HWND hwnd = info.info.win.window;
+    SetPropW(hwnd, LoLaCursorProperty, cursor);
+    SetPropW(hwnd, LoLaCursorVisibleProperty,
+             reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(visible ? 1 : 2)));
+    const auto current = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
+    if (current != LoLaCursorWindowProc) {
+        const auto previous = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+            hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(LoLaCursorWindowProc)));
+        if (previous && previous != LoLaCursorWindowProc) {
+            SetPropW(hwnd, LoLaCursorProcProperty, reinterpret_cast<HANDLE>(previous));
+        }
+    }
+    SetCursor(visible ? cursor : nullptr);
+}
+
+static void ReapplyLoLaWindowCursor(SDL_Window* window)
+{
+    SDL_SysWMinfo info {};
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return;
+    const auto visibility = reinterpret_cast<std::uintptr_t>(GetPropW(info.info.win.window, LoLaCursorVisibleProperty));
+    if (visibility == 2) {
+        SetCursor(nullptr);
+        return;
+    }
+    const auto cursor = reinterpret_cast<HCURSOR>(GetPropW(info.info.win.window, LoLaCursorProperty));
+    if (visibility == 1 && cursor != nullptr) SetCursor(cursor);
+}
+#endif
+
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
@@ -1812,6 +1876,9 @@ void Session::syncCursor()
         const auto sequence = cursor.value("sequence").toVariant().toULongLong();
         const auto shape = cursor.value("shape").toString();
         const bool visible = cursor.value("visible").toBool(false);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa cursor metadata: monitor=%d sequence=%llu shape=%s visible=%d",
+                    m_CursorMonitorIndex, sequence, shape.toUtf8().constData(), visible);
         if (sequence != m_LastCursorSequence) {
             SDL_SystemCursor systemCursor = SDL_SYSTEM_CURSOR_ARROW;
             if (shape == "ibeam") systemCursor = SDL_SYSTEM_CURSOR_IBEAM;
@@ -1836,7 +1903,34 @@ void Session::syncCursor()
                 m_LastCursorSequence = sequence;
             }
         }
+        // SDL may restore its default arrow while processing window/mouse events.
+        // Reassert the authoritative remote shape on every cursor poll.
+        if (m_RemoteCursor != nullptr) {
+            SDL_SetCursor(m_RemoteCursor);
+        }
+#ifdef Q_OS_WIN
+        // SDL can restore its window-class arrow during WM_SETCURSOR handling.
+        // Reapply the matching native system cursor after SDL state is updated.
+        LPCWSTR nativeCursor = IDC_ARROW;
+        if (shape == "ibeam") nativeCursor = IDC_IBEAM;
+        else if (shape == "wait") nativeCursor = IDC_WAIT;
+        else if (shape == "crosshair") nativeCursor = IDC_CROSS;
+        else if (shape == "size_nwse") nativeCursor = IDC_SIZENWSE;
+        else if (shape == "size_nesw") nativeCursor = IDC_SIZENESW;
+        else if (shape == "size_we") nativeCursor = IDC_SIZEWE;
+        else if (shape == "size_ns") nativeCursor = IDC_SIZENS;
+        else if (shape == "size_all") nativeCursor = IDC_SIZEALL;
+        else if (shape == "forbidden") nativeCursor = IDC_NO;
+        else if (shape == "hand") nativeCursor = IDC_HAND;
+        else if (shape == "busy") nativeCursor = IDC_APPSTARTING;
+        SetLoLaWindowCursor(m_Window, ::LoadCursorW(nullptr, nativeCursor), visible);
+#endif
         SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);
+#ifdef Q_OS_WIN
+        // SDL_ShowCursor may restore the default class cursor, so native shape
+        // application must be the final operation in the update.
+        SetLoLaWindowCursor(m_Window, ::LoadCursorW(nullptr, nativeCursor), visible);
+#endif
     }
     catch (const std::exception& e) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -1863,6 +1957,12 @@ void Session::start()
             m_CursorSyncEnabled = true;
             m_CursorMonitorIndex = monitorIndex;
         }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa cursor polling configured: mode=%s monitor=%d valid=%d enabled=%d",
+                    mouseMode.toUtf8().constData(),
+                    monitorIndex,
+                    monitorIndexOk,
+                    m_CursorSyncEnabled);
         if (mouseMode == "immersion") {
             m_Preferences->absoluteMouseMode = false;
         }
@@ -2099,6 +2199,9 @@ void Session::exec()
             m_NextClipboardSyncTick = SDL_GetTicks() + 1000;
         }
         if (m_CursorSyncEnabled && SDL_TICKS_PASSED(SDL_GetTicks(), m_NextCursorSyncTick)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                         "LoLa cursor polling request: monitor=%d tick=%u",
+                         m_CursorMonitorIndex, SDL_GetTicks());
             syncCursor();
             m_NextCursorSyncTick = SDL_GetTicks() + 250;
         }
@@ -2122,6 +2225,11 @@ void Session::exec()
         // blocks this thread too long for high polling rate mice and high
         // refresh rate displays.
         if (!SDL_PollEvent(&event)) {
+#ifdef Q_OS_WIN
+            // SDL_PollEvent() pumps WM_SETCURSOR even when it returns no SDL
+            // event. Restore the authoritative host cursor before continuing.
+            if (m_CursorSyncEnabled) ReapplyLoLaWindowCursor(m_Window);
+#endif
 #ifndef STEAM_LINK
             SDL_Delay(1);
 #else
@@ -2133,6 +2241,14 @@ void Session::exec()
             continue;
         }
 #endif
+        // SDL's native event pump may process WM_SETCURSOR while waiting and
+        // restore the class arrow. Reapply the selected remote cursor after it.
+        if (m_CursorSyncEnabled && m_RemoteCursor != nullptr) {
+            SDL_SetCursor(m_RemoteCursor);
+#ifdef Q_OS_WIN
+            ReapplyLoLaWindowCursor(m_Window);
+#endif
+        }
         switch (event.type) {
         case SDL_QUIT:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
