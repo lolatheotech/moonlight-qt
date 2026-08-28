@@ -30,12 +30,21 @@ void ComputerSeeker::start(int timeout)
     // from a remote LoLa client.
     if (matchingComputer) {
         const QString requestedAddress = m_ComputerName.toLower();
-        const NvAddress manualAddress = matchingComputer->manualAddress;
-        if (!manualAddress.isNull() &&
-                (manualAddress.address().toLower() == requestedAddress ||
-                 manualAddress.toString().toLower() == requestedAddress)) {
+        NvAddress requestedEndpoint;
+        for (const NvAddress& address : matchingComputer->uniqueAddresses()) {
+            if (address.address().toLower() == requestedAddress ||
+                    address.toString().toLower() == requestedAddress) {
+                requestedEndpoint = address;
+                break;
+            }
+        }
+
+        if (!requestedEndpoint.isNull()) {
             QWriteLocker lock(&matchingComputer->lock);
-            matchingComputer->activeAddress = manualAddress;
+            matchingComputer->manualAddress = requestedEndpoint;
+            matchingComputer->activeAddress = requestedEndpoint;
+            qInfo() << "Using authoritative CLI endpoint for" << matchingComputer->name
+                    << requestedEndpoint.toString();
         }
     }
 
