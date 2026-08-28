@@ -114,6 +114,13 @@ SDL_Color OverlayManager::getOverlayColor(OverlayType type)
 void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 {
     m_Renderer = renderer;
+    if (m_Renderer != nullptr) {
+        for (int i = 0; i < OverlayType::OverlayMax; i++) {
+            if (m_Overlays[i].enabled) {
+                notifyOverlayUpdated(static_cast<OverlayType>(i));
+            }
+        }
+    }
 }
 
 void OverlayManager::notifyOverlayUpdated(OverlayType type)

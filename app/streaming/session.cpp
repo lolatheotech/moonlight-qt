@@ -1950,6 +1950,10 @@ void Session::start()
     m_NextCursorSyncTick = 0;
 
     if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
+        m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate,
+                                           "LoLa  |  Disconnect\nClick here to end all streams");
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+
         const auto mouseMode = qEnvironmentVariable("LOLA_MOUSE_MODE").trimmed().toLower();
         bool monitorIndexOk = false;
         const auto monitorIndex = qEnvironmentVariableIntValue("LOLA_MONITOR_INDEX", &monitorIndexOk);
@@ -2001,7 +2005,7 @@ void Session::setLoLaMouseMode(int mode)
     const char* name = mode == 1 ? "Desktop" : mode == 2 ? "Immersion" : "Compatibility";
     char message[160];
     SDL_snprintf(message, sizeof(message),
-                 "LoLa mouse mode: %s\nCtrl+Alt+Shift+M to switch", name);
+                 "LoLa  |  Disconnect\nMouse: %s  |  Ctrl+Alt+Shift+M to switch", name);
     m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, message);
     m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa mouse mode switched in-stream: %s", name);
@@ -2522,6 +2526,26 @@ void Session::exec()
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
             presence.runCallbacks();
+            if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1" &&
+                    event.button.button == SDL_BUTTON_LEFT &&
+                    event.button.x >= 0 && event.button.x <= 520 &&
+                    event.button.y >= 0 && event.button.y <= 110) {
+                if (event.type == SDL_MOUSEBUTTONDOWN) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa in-stream Disconnect selected");
+#ifdef Q_OS_WIN
+                    EnumWindows([](HWND window, LPARAM) -> BOOL {
+                        wchar_t title[128] = {};
+                        GetWindowTextW(window, title, ARRAYSIZE(title));
+                        if (wcscmp(title, L"LoLa Remote Desktop") == 0) {
+                            PostMessageW(window, WM_CLOSE, 0, 0);
+                        }
+                        return TRUE;
+                    }, 0);
+#endif
+                    setShouldExit();
+                }
+                break;
+            }
             m_InputHandler->handleMouseButtonEvent(&event.button);
             break;
         case SDL_MOUSEMOTION:
