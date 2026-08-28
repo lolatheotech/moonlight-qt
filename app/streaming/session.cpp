@@ -1992,6 +1992,21 @@ void Session::start()
     thread->start();
 }
 
+void Session::setLoLaMouseMode(int mode)
+{
+    m_CursorSyncEnabled = mode == 1;
+    m_LastCursorSequence = std::numeric_limits<quint64>::max();
+    m_NextCursorSyncTick = 0;
+
+    const char* name = mode == 1 ? "Desktop" : mode == 2 ? "Immersion" : "Compatibility";
+    char message[160];
+    SDL_snprintf(message, sizeof(message),
+                 "LoLa mouse mode: %s\nCtrl+Alt+Shift+M to switch", name);
+    m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, message);
+    m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa mouse mode switched in-stream: %s", name);
+}
+
 void Session::interrupt()
 {
     // Stop any connection in progress

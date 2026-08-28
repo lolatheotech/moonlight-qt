@@ -240,6 +240,8 @@ private:
     int m_StreamWidth;
     int m_StreamHeight;
     bool m_AbsoluteMouseMode;
+    // LoLa branded mode: 0 = Compatibility, 1 = Desktop, 2 = Immersion.
+    int m_LoLaMouseMode;
     bool m_AbsoluteTouchMode;
     bool m_DisabledTouchFeedback;
 

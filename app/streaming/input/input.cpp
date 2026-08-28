@@ -31,6 +31,9 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_StreamWidth(streamWidth),
       m_StreamHeight(streamHeight),
       m_AbsoluteMouseMode(prefs.absoluteMouseMode),
+      m_LoLaMouseMode(
+          qEnvironmentVariable("LOLA_MOUSE_MODE").compare("desktop", Qt::CaseInsensitive) == 0 ? 1 :
+          qEnvironmentVariable("LOLA_MOUSE_MODE").compare("immersion", Qt::CaseInsensitive) == 0 ? 2 : 0),
       m_AbsoluteTouchMode(prefs.absoluteTouchMode),
       m_DisabledTouchFeedback(false),
       m_LeftButtonReleaseTimer(0),

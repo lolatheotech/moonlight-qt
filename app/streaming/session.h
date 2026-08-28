@@ -125,6 +125,8 @@ public:
 
     void setShouldExit(bool quitHostApp = false);
 
+    void setLoLaMouseMode(int mode);
+
 signals:
     void stageStarting(QString stage);
 
