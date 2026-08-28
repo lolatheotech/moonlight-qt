@@ -172,6 +172,15 @@ public:
              bool persistGameControllersOnDisconnect,
              QString& rtspSessionUrl);
 
+    QString
+    getClipboardText();
+
+    QString
+    getCursorMetadata(int monitorIndex);
+
+    void
+    setClipboardText(const QString& content);
+
     QVector<NvApp>
     getAppList();
 
@@ -193,7 +202,9 @@ private:
                    QString command,
                    QString arguments,
                    int timeoutMs,
-                   NvLogLevel logLevel);
+                   NvLogLevel logLevel,
+                   bool post = false,
+                   const QByteArray& body = QByteArray());
 
     NvAddress m_Address;
     QNetworkAccessManager* m_Nam;

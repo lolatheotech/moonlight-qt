@@ -59,7 +59,7 @@ Item {
         window.visible = true
     }
 
-    function sessionFinished(portTestResult)
+    function sessionFinished(portTestResult, unexpectedTermination)
     {
         if (portTestResult !== 0 && portTestResult !== -1 && streamSegueErrorDialog.text) {
             streamSegueErrorDialog.text += "\n\n" + qsTr("This PC's Internet connection is blocking Moonlight. Streaming over the Internet may not work while connected to this network.")
@@ -74,8 +74,10 @@ Item {
         }
 
         if (quitAfter && !streamSegueErrorDialog.text) {
-            // If this was a CLI launch without errors, exit now
-            Qt.quit()
+            // LoLa's supervisor must distinguish a clean user-requested exit
+            // from an involuntary host/network loss in headless CLI mode.
+            // Qt.quit() always returns zero, which previously suppressed recovery.
+            Qt.exit(unexpectedTermination ? 3 : 0)
         }
         else {
             // Show the Qt window again after streaming

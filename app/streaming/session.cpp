@@ -1,7 +1,72 @@
 #include "session.h"
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <SDL_syswm.h>
+#endif
+
+#ifdef Q_OS_WIN
+static constexpr wchar_t LoLaCursorProperty[] = L"LoLaCursorHandle";
+static constexpr wchar_t LoLaCursorProcProperty[] = L"LoLaCursorOldWndProc";
+static constexpr wchar_t LoLaCursorVisibleProperty[] = L"LoLaCursorVisible";
+
+static LRESULT CALLBACK LoLaCursorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT) {
+        const auto visibility = reinterpret_cast<std::uintptr_t>(GetPropW(hwnd, LoLaCursorVisibleProperty));
+        if (visibility == 2) {
+            SetCursor(nullptr);
+            return TRUE;
+        }
+        const auto cursor = reinterpret_cast<HCURSOR>(GetPropW(hwnd, LoLaCursorProperty));
+        if (visibility == 1 && cursor != nullptr) {
+            SetCursor(cursor);
+            return TRUE;
+        }
+    }
+    const auto previous = reinterpret_cast<WNDPROC>(GetPropW(hwnd, LoLaCursorProcProperty));
+    return previous ? CallWindowProcW(previous, hwnd, message, wParam, lParam)
+                    : DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+static void SetLoLaWindowCursor(SDL_Window* window, HCURSOR cursor, bool visible)
+{
+    SDL_SysWMinfo info {};
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return;
+    const HWND hwnd = info.info.win.window;
+    SetPropW(hwnd, LoLaCursorProperty, cursor);
+    SetPropW(hwnd, LoLaCursorVisibleProperty,
+             reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(visible ? 1 : 2)));
+    const auto current = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
+    if (current != LoLaCursorWindowProc) {
+        const auto previous = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+            hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(LoLaCursorWindowProc)));
+        if (previous && previous != LoLaCursorWindowProc) {
+            SetPropW(hwnd, LoLaCursorProcProperty, reinterpret_cast<HANDLE>(previous));
+        }
+    }
+    SetCursor(visible ? cursor : nullptr);
+}
+
+static void ReapplyLoLaWindowCursor(SDL_Window* window)
+{
+    SDL_SysWMinfo info {};
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return;
+    const auto visibility = reinterpret_cast<std::uintptr_t>(GetPropW(info.info.win.window, LoLaCursorVisibleProperty));
+    if (visibility == 2) {
+        SetCursor(nullptr);
+        return;
+    }
+    const auto cursor = reinterpret_cast<HCURSOR>(GetPropW(info.info.win.window, LoLaCursorProperty));
+    if (visibility == 1 && cursor != nullptr) SetCursor(cursor);
+}
+#endif
+
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
+#include "backend/nvhttp.h"
 
 #include <Limelight.h>
 #include "SDL_compat.h"
@@ -31,6 +96,8 @@
 
 #include <openssl/rand.h>
 
+#include <limits>
+
 #include <QtEndian>
 #include <QCoreApplication>
 #include <QThreadPool>
@@ -39,6 +106,8 @@
 #include <QImage>
 #include <QGuiApplication>
 #include <QCursor>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QScreen>
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -93,6 +162,14 @@ void Session::clConnectionTerminated(int errorCode)
     // Display the termination dialog if this was not intended
     switch (errorCode) {
     case ML_ERROR_GRACEFUL_TERMINATION:
+        // Apollo reports an involuntary host shutdown/loss using the protocol's
+        // graceful-termination reason. In a LoLa-supervised session, local user
+        // shutdown is handled by the local SDL exit path, so a remote callback
+        // carrying this reason must trigger the supervisor's bounded reconnect.
+        // Keep upstream GUI behaviour unchanged outside LoLa sessions.
+        if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
+            s_ActiveSession->m_UnexpectedTermination = true;
+        }
         break;
 
     case ML_ERROR_NO_VIDEO_TRAFFIC:
@@ -1280,7 +1357,8 @@ private:
             emit m_Session->quitStarting();
         }
         else {
-            emit m_Session->sessionFinished(m_Session->m_PortTestResults);
+            emit m_Session->sessionFinished(m_Session->m_PortTestResults,
+                                             m_Session->m_UnexpectedTermination);
         }
 
         // The video decoder must already be destroyed, since it could
@@ -1303,7 +1381,8 @@ private:
             }
 
             // Session is finished now
-            emit m_Session->sessionFinished(m_Session->m_PortTestResults);
+            emit m_Session->sessionFinished(m_Session->m_PortTestResults,
+                                             m_Session->m_UnexpectedTermination);
         }
 
         // Exit the entire program if requested
@@ -1746,8 +1825,160 @@ void Session::setShouldExit(bool quitHostApp)
     m_ShouldExit = true;
 }
 
+void Session::syncClipboard()
+{
+    constexpr int kMaxBytes = 1024 * 1024;
+    char* raw = SDL_GetClipboardText();
+    QByteArray local = raw ? QByteArray(raw) : QByteArray();
+    SDL_free(raw);
+    try {
+        NvHTTP http(m_Computer);
+        QByteArray host = http.getClipboardText().toUtf8();
+        if (!m_ClipboardInitialized) {
+            m_LastLocalClipboard = local;
+            m_LastHostClipboard = host;
+            m_ClipboardInitialized = true;
+            return;
+        }
+        const bool localChanged = local != m_LastLocalClipboard;
+        const bool hostChanged = host != m_LastHostClipboard;
+        if (localChanged && local.size() <= kMaxBytes) {
+            http.setClipboardText(QString::fromUtf8(local));
+            m_LastLocalClipboard = m_LastHostClipboard = local;
+        } else if (hostChanged && host.size() <= kMaxBytes) {
+            if (SDL_SetClipboardText(host.constData()) == 0)
+                m_LastLocalClipboard = m_LastHostClipboard = host;
+        } else {
+            m_LastLocalClipboard = local;
+            m_LastHostClipboard = host;
+        }
+    } catch (const std::exception& e) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa clipboard synchronization unavailable: %s", e.what());
+    }
+}
+
+void Session::syncCursor()
+{
+    try {
+        NvHTTP http(m_Computer);
+        const auto document = QJsonDocument::fromJson(http.getCursorMetadata(m_CursorMonitorIndex).toUtf8());
+        if (!document.isObject()) {
+            throw std::runtime_error("invalid cursor metadata JSON");
+        }
+
+        const auto cursor = document.object();
+        if (cursor.value("schemaVersion").toInt() != 1 ||
+                cursor.value("monitorIndex").toInt(-1) != m_CursorMonitorIndex) {
+            throw std::runtime_error("invalid cursor metadata contract");
+        }
+
+        const auto sequence = cursor.value("sequence").toVariant().toULongLong();
+        const auto shape = cursor.value("shape").toString();
+        const bool visible = cursor.value("visible").toBool(false);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa cursor metadata: monitor=%d sequence=%llu shape=%s visible=%d",
+                    m_CursorMonitorIndex, sequence, shape.toUtf8().constData(), visible);
+        if (sequence != m_LastCursorSequence) {
+            SDL_SystemCursor systemCursor = SDL_SYSTEM_CURSOR_ARROW;
+            if (shape == "ibeam") systemCursor = SDL_SYSTEM_CURSOR_IBEAM;
+            else if (shape == "wait") systemCursor = SDL_SYSTEM_CURSOR_WAIT;
+            else if (shape == "crosshair") systemCursor = SDL_SYSTEM_CURSOR_CROSSHAIR;
+            else if (shape == "size_nwse") systemCursor = SDL_SYSTEM_CURSOR_SIZENWSE;
+            else if (shape == "size_nesw") systemCursor = SDL_SYSTEM_CURSOR_SIZENESW;
+            else if (shape == "size_we") systemCursor = SDL_SYSTEM_CURSOR_SIZEWE;
+            else if (shape == "size_ns") systemCursor = SDL_SYSTEM_CURSOR_SIZENS;
+            else if (shape == "size_all") systemCursor = SDL_SYSTEM_CURSOR_SIZEALL;
+            else if (shape == "forbidden") systemCursor = SDL_SYSTEM_CURSOR_NO;
+            else if (shape == "hand") systemCursor = SDL_SYSTEM_CURSOR_HAND;
+            else if (shape == "busy") systemCursor = SDL_SYSTEM_CURSOR_WAITARROW;
+
+            SDL_Cursor* replacement = SDL_CreateSystemCursor(systemCursor);
+            if (replacement != nullptr) {
+                SDL_SetCursor(replacement);
+                if (m_RemoteCursor != nullptr) {
+                    SDL_FreeCursor(m_RemoteCursor);
+                }
+                m_RemoteCursor = replacement;
+                m_LastCursorSequence = sequence;
+            }
+        }
+        // SDL may restore its default arrow while processing window/mouse events.
+        // Reassert the authoritative remote shape on every cursor poll.
+        if (m_RemoteCursor != nullptr) {
+            SDL_SetCursor(m_RemoteCursor);
+        }
+#ifdef Q_OS_WIN
+        // SDL can restore its window-class arrow during WM_SETCURSOR handling.
+        // Reapply the matching native system cursor after SDL state is updated.
+        LPCWSTR nativeCursor = IDC_ARROW;
+        if (shape == "ibeam") nativeCursor = IDC_IBEAM;
+        else if (shape == "wait") nativeCursor = IDC_WAIT;
+        else if (shape == "crosshair") nativeCursor = IDC_CROSS;
+        else if (shape == "size_nwse") nativeCursor = IDC_SIZENWSE;
+        else if (shape == "size_nesw") nativeCursor = IDC_SIZENESW;
+        else if (shape == "size_we") nativeCursor = IDC_SIZEWE;
+        else if (shape == "size_ns") nativeCursor = IDC_SIZENS;
+        else if (shape == "size_all") nativeCursor = IDC_SIZEALL;
+        else if (shape == "forbidden") nativeCursor = IDC_NO;
+        else if (shape == "hand") nativeCursor = IDC_HAND;
+        else if (shape == "busy") nativeCursor = IDC_APPSTARTING;
+        SetLoLaWindowCursor(m_Window, ::LoadCursorW(nullptr, nativeCursor), visible);
+#endif
+        SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);
+#ifdef Q_OS_WIN
+        // SDL_ShowCursor may restore the default class cursor, so native shape
+        // application must be the final operation in the update.
+        SetLoLaWindowCursor(m_Window, ::LoadCursorW(nullptr, nativeCursor), visible);
+#endif
+    }
+    catch (const std::exception& e) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa cursor synchronization unavailable: %s", e.what());
+        SDL_ShowCursor(SDL_ENABLE);
+    }
+}
+
 void Session::start()
 {
+    m_ClipboardSyncEnabled = qEnvironmentVariableIntValue("LOLA_CLIPBOARD_SYNC") == 1;
+    m_ClipboardInitialized = false;
+    m_NextClipboardSyncTick = 0;
+    m_CursorSyncEnabled = false;
+    m_CursorMonitorIndex = 0;
+    m_LastCursorSequence = std::numeric_limits<quint64>::max();
+    m_NextCursorSyncTick = 0;
+
+    if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
+        m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate,
+                                           "LoLa  |  Disconnect\nClick here to end all streams");
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+
+        const auto mouseMode = qEnvironmentVariable("LOLA_MOUSE_MODE").trimmed().toLower();
+        bool monitorIndexOk = false;
+        const auto monitorIndex = qEnvironmentVariableIntValue("LOLA_MONITOR_INDEX", &monitorIndexOk);
+        if (mouseMode == "desktop" && monitorIndexOk && monitorIndex >= 0 && monitorIndex <= 15) {
+            m_CursorSyncEnabled = true;
+            m_CursorMonitorIndex = monitorIndex;
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa cursor polling configured: mode=%s monitor=%d valid=%d enabled=%d",
+                    mouseMode.toUtf8().constData(),
+                    monitorIndex,
+                    monitorIndexOk,
+                    m_CursorSyncEnabled);
+        if (mouseMode == "immersion") {
+            m_Preferences->absoluteMouseMode = false;
+        }
+        else {
+            // Desktop and Compatibility use display-relative absolute coordinates.
+            // Unknown or missing values fail safely to Compatibility semantics.
+            m_Preferences->absoluteMouseMode = true;
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa mouse mode: %s",
+                    mouseMode.isEmpty() ? "compatibility" : mouseMode.toUtf8().constData());
+    }
+
     // Wait for any old session to finish cleanup
     s_ActiveSessionSemaphore.acquire();
 
@@ -1763,6 +1994,21 @@ void Session::start()
     QObject::connect(thread, &QThread::finished, this, &Session::exec);
     QObject::connect(thread, &QThread::finished, thread, &QThread::deleteLater);
     thread->start();
+}
+
+void Session::setLoLaMouseMode(int mode)
+{
+    m_CursorSyncEnabled = mode == 1;
+    m_LastCursorSequence = std::numeric_limits<quint64>::max();
+    m_NextCursorSyncTick = 0;
+
+    const char* name = mode == 1 ? "Desktop" : mode == 2 ? "Immersion" : "Compatibility";
+    char message[160];
+    SDL_snprintf(message, sizeof(message),
+                 "LoLa  |  Disconnect\nMouse: %s  |  Ctrl+Alt+Shift+M to switch", name);
+    m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, message);
+    m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa mouse mode switched in-stream: %s", name);
 }
 
 void Session::interrupt()
@@ -1845,6 +2091,9 @@ void Session::exec()
 #else
     std::string windowName = QString(m_Computer->name + " - Moonlight").toStdString();
 #endif
+    if (qEnvironmentVariableIsSet("LOLA_BRANDED_SESSION")) {
+        windowName = "LoLa Remote Desktop";
+    }
 
     m_Window = SDL_CreateWindow(windowName.c_str(),
                                 x,
@@ -1964,6 +2213,17 @@ void Session::exec()
     // because we want to suspend all Qt processing until the stream is over.
     SDL_Event event;
     for (;;) {
+        if (m_ClipboardSyncEnabled && SDL_TICKS_PASSED(SDL_GetTicks(), m_NextClipboardSyncTick)) {
+            syncClipboard();
+            m_NextClipboardSyncTick = SDL_GetTicks() + 1000;
+        }
+        if (m_CursorSyncEnabled && SDL_TICKS_PASSED(SDL_GetTicks(), m_NextCursorSyncTick)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                         "LoLa cursor polling request: monitor=%d tick=%u",
+                         m_CursorMonitorIndex, SDL_GetTicks());
+            syncCursor();
+            m_NextCursorSyncTick = SDL_GetTicks() + 250;
+        }
 #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
         // SDL 2.0.18 has a proper wait event implementation that uses platform
         // support to block on events rather than polling on Windows, macOS, X11,
@@ -1984,6 +2244,11 @@ void Session::exec()
         // blocks this thread too long for high polling rate mice and high
         // refresh rate displays.
         if (!SDL_PollEvent(&event)) {
+#ifdef Q_OS_WIN
+            // SDL_PollEvent() pumps WM_SETCURSOR even when it returns no SDL
+            // event. Restore the authoritative host cursor before continuing.
+            if (m_CursorSyncEnabled) ReapplyLoLaWindowCursor(m_Window);
+#endif
 #ifndef STEAM_LINK
             SDL_Delay(1);
 #else
@@ -1995,6 +2260,14 @@ void Session::exec()
             continue;
         }
 #endif
+        // SDL's native event pump may process WM_SETCURSOR while waiting and
+        // restore the class arrow. Reapply the selected remote cursor after it.
+        if (m_CursorSyncEnabled && m_RemoteCursor != nullptr) {
+            SDL_SetCursor(m_RemoteCursor);
+#ifdef Q_OS_WIN
+            ReapplyLoLaWindowCursor(m_Window);
+#endif
+        }
         switch (event.type) {
         case SDL_QUIT:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -2253,6 +2526,26 @@ void Session::exec()
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
             presence.runCallbacks();
+            if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1" &&
+                    event.button.button == SDL_BUTTON_LEFT &&
+                    event.button.x >= 0 && event.button.x <= 520 &&
+                    event.button.y >= 0 && event.button.y <= 110) {
+                if (event.type == SDL_MOUSEBUTTONDOWN) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa in-stream Disconnect selected");
+#ifdef Q_OS_WIN
+                    EnumWindows([](HWND window, LPARAM) -> BOOL {
+                        wchar_t title[128] = {};
+                        GetWindowTextW(window, title, ARRAYSIZE(title));
+                        if (wcscmp(title, L"LoLa Remote Desktop") == 0) {
+                            PostMessageW(window, WM_CLOSE, 0, 0);
+                        }
+                        return TRUE;
+                    }, 0);
+#endif
+                    setShouldExit();
+                }
+                break;
+            }
             m_InputHandler->handleMouseButtonEvent(&event.button);
             break;
         case SDL_MOUSEMOTION:
@@ -2360,6 +2653,11 @@ DispatchDeferredCleanup:
             m_QtWindow->setWindowState(Qt::WindowNoState);
         }
 #endif
+    }
+
+    if (m_RemoteCursor != nullptr) {
+        SDL_FreeCursor(m_RemoteCursor);
+        m_RemoteCursor = nullptr;
     }
 
     // This must be called after the decoder is deleted, because

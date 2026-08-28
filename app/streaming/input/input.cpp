@@ -22,11 +22,18 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_FakeMouseCaptureActive(false),
       m_KeyboardCaptureActive(false),
       m_CaptureSystemKeysMode(prefs.captureSysKeysMode),
-      m_MouseCursorCapturedVisibilityState(SDL_DISABLE),
+      m_MouseCursorCapturedVisibilityState(
+          qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1" &&
+          qEnvironmentVariable("LOLA_MOUSE_MODE").compare("desktop", Qt::CaseInsensitive) == 0
+              ? SDL_ENABLE
+              : SDL_DISABLE),
       m_LongPressTimer(0),
       m_StreamWidth(streamWidth),
       m_StreamHeight(streamHeight),
       m_AbsoluteMouseMode(prefs.absoluteMouseMode),
+      m_LoLaMouseMode(
+          qEnvironmentVariable("LOLA_MOUSE_MODE").compare("desktop", Qt::CaseInsensitive) == 0 ? 1 :
+          qEnvironmentVariable("LOLA_MOUSE_MODE").compare("immersion", Qt::CaseInsensitive) == 0 ? 2 : 0),
       m_AbsoluteTouchMode(prefs.absoluteTouchMode),
       m_DisabledTouchFeedback(false),
       m_LeftButtonReleaseTimer(0),

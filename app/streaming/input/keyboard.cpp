@@ -2,6 +2,7 @@
 
 #include <Limelight.h>
 #include "SDL_compat.h"
+#include <QtGlobal>
 
 #define VK_0 0x30
 #define VK_A 0x41
@@ -65,8 +66,18 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         // Uncapture input
         setCaptureActive(false);
 
-        // Toggle mouse mode
-        m_AbsoluteMouseMode = !m_AbsoluteMouseMode;
+        if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
+            // Cycle Compatibility -> Desktop -> Immersion -> Compatibility.
+            m_LoLaMouseMode = (m_LoLaMouseMode + 1) % 3;
+            m_AbsoluteMouseMode = m_LoLaMouseMode != 2;
+            m_MouseCursorCapturedVisibilityState = m_LoLaMouseMode == 1 ? SDL_ENABLE : SDL_DISABLE;
+            SDL_ShowCursor(m_MouseCursorCapturedVisibilityState);
+            Session::get()->setLoLaMouseMode(m_LoLaMouseMode);
+        }
+        else {
+            // Preserve upstream two-state behaviour outside branded sessions.
+            m_AbsoluteMouseMode = !m_AbsoluteMouseMode;
+        }
 
         // Recapture input
         setCaptureActive(true);

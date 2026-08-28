@@ -212,6 +212,17 @@ NvHTTP::startApp(QString verb,
     memcpy(&riKeyId, streamConfig->remoteInputAesIv, sizeof(riKeyId));
     riKeyId = qFromBigEndian(riKeyId);
 
+    QString lolaMonitorQuery;
+    bool monitorIndexOk = false;
+    bool monitorCountOk = false;
+    const auto monitorIndex = qEnvironmentVariableIntValue("LOLA_MONITOR_INDEX", &monitorIndexOk);
+    const auto monitorCount = qEnvironmentVariableIntValue("LOLA_MONITOR_COUNT", &monitorCountOk);
+    if (monitorIndexOk && monitorCountOk && monitorCount > 0 && monitorCount <= 8 &&
+            monitorIndex >= 0 && monitorIndex < monitorCount) {
+        lolaMonitorQuery = "&lola_monitor_index=" + QString::number(monitorIndex) +
+                           "&lola_monitor_count=" + QString::number(monitorCount);
+    }
+
     QString response =
             openConnectionToString(m_BaseUrlHttps,
                                    verb,
@@ -234,7 +245,8 @@ NvHTTP::startApp(QString verb,
                                    "&remoteControllersBitmap="+QString::number(gamepadMask)+
                                    "&gcmap="+QString::number(gamepadMask)+
                                    "&gcpersist="+QString::number(persistGameControllersOnDisconnect ? 1 : 0)+
-                                   LiGetLaunchUrlQueryParameters(),
+                                   LiGetLaunchUrlQueryParameters()+
+                                   lolaMonitorQuery,
                                    LAUNCH_TIMEOUT_MS);
 
     qInfo() << "Launch response:" << response;
@@ -248,6 +260,7 @@ NvHTTP::startApp(QString verb,
 void
 NvHTTP::quitApp()
 {
+
     QString response =
             openConnectionToString(m_BaseUrlHttps,
                                    "cancel",
@@ -295,6 +308,39 @@ NvHTTP::getDisplayModeList(QString serverInfo)
     }
 
     return modes;
+}
+
+QString
+NvHTTP::getClipboardText()
+{
+    return openConnectionToString(m_BaseUrlHttps,
+                                  "actions/clipboard",
+                                  "type=text",
+                                  1000,
+                                  NvLogLevel::NVLL_ERROR);
+}
+
+QString
+NvHTTP::getCursorMetadata(int monitorIndex)
+{
+    return openConnectionToString(m_BaseUrlHttps,
+                                  "actions/cursor",
+                                  "monitor=" + QString::number(monitorIndex),
+                                  500,
+                                  NvLogLevel::NVLL_ERROR);
+}
+
+void
+NvHTTP::setClipboardText(const QString& content)
+{
+    QNetworkReply* reply = openConnection(m_BaseUrlHttps,
+                                          "actions/clipboard",
+                                          "type=text",
+                                          1000,
+                                          NvLogLevel::NVLL_ERROR,
+                                          true,
+                                          content.toUtf8());
+    delete reply;
 }
 
 QVector<NvApp>
@@ -483,7 +529,9 @@ NvHTTP::openConnection(QUrl baseUrl,
                        QString command,
                        QString arguments,
                        int timeoutMs,
-                       NvLogLevel logLevel)
+                       NvLogLevel logLevel,
+                       bool post,
+                       const QByteArray& body)
 {
     // Port must be set
     Q_ASSERT(baseUrl.port(0) != 0);
@@ -515,7 +563,7 @@ NvHTTP::openConnection(QUrl baseUrl,
 #endif
 
     auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
-    QNetworkReply* reply = m_Nam->get(request);
+    QNetworkReply* reply = post ? m_Nam->post(request, body) : m_Nam->get(request);
 
     // Run the request with a timeout if requested
     QEventLoop loop;

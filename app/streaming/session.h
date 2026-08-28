@@ -125,6 +125,8 @@ public:
 
     void setShouldExit(bool quitHostApp = false);
 
+    void setLoLaMouseMode(int mode);
+
 signals:
     void stageStarting(QString stage);
 
@@ -136,7 +138,7 @@ signals:
 
     void quitStarting();
 
-    void sessionFinished(int portTestResult);
+    void sessionFinished(int portTestResult, bool unexpectedTermination);
 
     // Emitted after sessionFinished() when the session is ready to be destroyed
     void readyForDeletion();
@@ -145,6 +147,10 @@ signals:
 
 private:
     void exec();
+
+    void syncClipboard();
+
+    void syncCursor();
 
     bool startConnectionAsync();
 
@@ -264,6 +270,16 @@ private:
     int m_FlushingWindowEventsRef;
     QStringList m_LaunchWarnings;
     bool m_ShouldExit;
+    bool m_ClipboardSyncEnabled = false;
+    bool m_ClipboardInitialized = false;
+    Uint32 m_NextClipboardSyncTick = 0;
+    QByteArray m_LastLocalClipboard;
+    QByteArray m_LastHostClipboard;
+    bool m_CursorSyncEnabled = false;
+    int m_CursorMonitorIndex = 0;
+    quint64 m_LastCursorSequence = 0;
+    Uint32 m_NextCursorSyncTick = 0;
+    SDL_Cursor* m_RemoteCursor = nullptr;
 
     bool m_AsyncConnectionSuccess;
     int m_PortTestResults;

@@ -5,6 +5,11 @@
 
 #include <h264_stream.h>
 
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
+#include <QJsonValue>
+
 extern "C" {
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/pixdesc.h>
@@ -58,6 +63,41 @@ extern "C" {
 #define MAX_SPS_EXTRA_SIZE 16
 
 #define FAILED_DECODES_RESET_THRESHOLD 20
+
+static void exportLoLaTelemetry(const VIDEO_STATS& stats)
+{
+    const QString path = qEnvironmentVariable("LOLA_TELEMETRY_FILE");
+    if (path.isEmpty() || stats.totalFrames == 0) {
+        return;
+    }
+
+    QJsonObject payload {
+        {"schemaVersion", 1},
+        {"roundTripLatencyMs", stats.lastRtt == 0 ? QJsonValue() : QJsonValue((int)stats.lastRtt)},
+        {"packetLossPercent", (double)stats.networkDroppedFrames / stats.totalFrames * 100.0},
+        {"framesDropped", (qint64)(stats.networkDroppedFrames + stats.pacerDroppedFrames)},
+        {"networkDroppedFrames", (qint64)stats.networkDroppedFrames},
+        {"jitterDroppedFrames", (qint64)stats.pacerDroppedFrames},
+        {"decodeLatencyMs", stats.decodedFrames == 0 ? QJsonValue() : QJsonValue((double)stats.totalDecodeTimeUs / 1000.0 / stats.decodedFrames)},
+        {"incomingFps", stats.receivedFps},
+        {"decodedFps", stats.decodedFps},
+        {"renderedFps", stats.renderedFps}
+    };
+
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Unable to open LoLa telemetry file: %s",
+                    qUtf8Printable(output.errorString()));
+        return;
+    }
+    output.write(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    if (!output.commit()) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Unable to publish LoLa telemetry: %s",
+                    qUtf8Printable(output.errorString()));
+    }
+}
 
 bool FFmpegVideoDecoder::isHardwareAccelerated()
 {
@@ -2120,6 +2160,12 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 
     // Flip stats windows roughly every second
     if (LiGetMicroseconds() > m_ActiveWndVideoStats.measurementStartUs + 1000000) {
+        // Export the same native one-second statistics used by Moonlight's
+        // debug overlay when this process is supervised by LoLa.
+        VIDEO_STATS currentWndStats = {};
+        addVideoStats(m_ActiveWndVideoStats, currentWndStats);
+        exportLoLaTelemetry(currentWndStats);
+
         // Update overlay stats if it's enabled
         if (Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayDebug)) {
             VIDEO_STATS lastTwoWndStats = {};
