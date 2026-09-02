@@ -33,12 +33,13 @@ static bool ApplyLoLaOverlayImage(HWND control, const std::wstring& path)
 {
     QImage logo(QString::fromStdWString(path));
     if (logo.isNull()) return false;
-    QImage canvas(52, 52, QImage::Format_ARGB32_Premultiplied);
-    canvas.fill(Qt::transparent);
+    QImage canvas(44, 44, QImage::Format_RGB32);
+    canvas.fill(qRgb(255, 0, 255));
     QPainter painter(&canvas);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter.drawImage(QRect(4, 4, 44, 44), logo);
+    painter.drawImage(QRect(0, 0, 44, 44), logo);
     painter.end();
+
     BITMAPINFO info{};
     info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     info.bmiHeader.biWidth = canvas.width();
@@ -46,19 +47,20 @@ static bool ApplyLoLaOverlayImage(HWND control, const std::wstring& path)
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
+
     void* bits = nullptr;
     HDC screen = GetDC(nullptr);
     HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!bitmap || !bits) { if (bitmap) DeleteObject(bitmap); ReleaseDC(nullptr, screen); return false; }
+    ReleaseDC(nullptr, screen);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        return false;
+    }
+
     memcpy(bits, canvas.constBits(), static_cast<size_t>(canvas.sizeInBytes()));
-    HDC memory = CreateCompatibleDC(screen);
-    const auto previous = SelectObject(memory, bitmap);
-    POINT source{0, 0}; SIZE size{52, 52}; RECT rect{}; GetWindowRect(control, &rect); POINT target{rect.left, rect.top};
-    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    const bool updated = UpdateLayeredWindow(control, screen, &target, &size, memory, &source, 0, &blend, ULW_ALPHA) != FALSE;
-    SelectObject(memory, previous); DeleteDC(memory); ReleaseDC(nullptr, screen);
-    if (updated) SetPropW(control, LoLaLogoProperty, bitmap); else DeleteObject(bitmap);
-    return updated;
+    SetPropW(control, LoLaLogoProperty, bitmap);
+    InvalidateRect(control, nullptr, FALSE);
+    return true;
 }
 
 static bool IsLoLaOwnerDeferred(HWND owner)
@@ -85,6 +87,8 @@ static void PositionLoLaControl(HWND control)
         IsLoLaOwnerDeferred(owner);
     SetWindowPos(control, HWND_TOPMOST, bounds.left + offsetX, bounds.top + offsetY, 52, 52,
                  SWP_NOACTIVATE | (mouseMode == 2 || deferShow ? 0 : SWP_SHOWWINDOW));
+    InvalidateRect(control, nullptr, FALSE);
+    UpdateWindow(control);
 }
 
 static void SendLoLaShortcut(HWND owner, WORD key)
@@ -111,7 +115,24 @@ static LRESULT CALLBACK LoLaControlProc(HWND hwnd, UINT message, WPARAM wParam, 
         PositionLoLaControl(hwnd);
         return 0;
     }
-    if (message == WM_PAINT) { ValidateRect(hwnd, nullptr); return 0; }
+    if (message == WM_PAINT) {
+        PAINTSTRUCT paint{};
+        HDC dc = BeginPaint(hwnd, &paint);
+        RECT bounds{};
+        GetClientRect(hwnd, &bounds);
+        HBRUSH transparentKey = CreateSolidBrush(RGB(255, 0, 255));
+        FillRect(dc, &bounds, transparentKey);
+        DeleteObject(transparentKey);
+        if (const auto logo = reinterpret_cast<HBITMAP>(GetPropW(hwnd, LoLaLogoProperty))) {
+            HDC memory = CreateCompatibleDC(dc);
+            const auto previous = SelectObject(memory, logo);
+            BitBlt(dc, 4, 4, 44, 44, memory, 0, 0, SRCCOPY);
+            SelectObject(memory, previous);
+            DeleteDC(memory);
+        }
+        EndPaint(hwnd, &paint);
+        return 0;
+    }
     if (message == WM_LBUTTONDOWN) {
         SetCapture(hwnd);
         SetPropW(hwnd, LoLaDragXProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(static_cast<short>(LOWORD(lParam)))));
@@ -201,6 +222,10 @@ static void CreateLoLaControl(SDL_Window* streamWindow)
     LoLaControlWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED, L"LoLaFloatingControl", L"LoLa Stream Control",
         WS_POPUP | WS_VISIBLE, 0, 0, 52, 52, info.info.win.window, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!LoLaControlWindow) return;
+    if (!SetLayeredWindowAttributes(LoLaControlWindow, RGB(255, 0, 255), 0, LWA_COLORKEY)) {
+        DestroyWindow(LoLaControlWindow);
+        return;
+    }
     SetPropW(LoLaControlWindow, LoLaOwnerProperty, info.info.win.window);
     SetPropW(LoLaControlWindow, LoLaOffsetXProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(18)));
     SetPropW(LoLaControlWindow, LoLaOffsetYProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(18)));
