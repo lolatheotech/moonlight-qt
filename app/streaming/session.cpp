@@ -33,12 +33,20 @@ static bool ApplyLoLaOverlayImage(HWND control, const std::wstring& path)
 {
     QImage logo(QString::fromStdWString(path));
     if (logo.isNull()) return false;
+    const QImage scaledLogo = logo.scaled(44, 44, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+        .convertToFormat(QImage::Format_ARGB32);
     QImage canvas(44, 44, QImage::Format_RGB32);
-    canvas.fill(qRgb(255, 0, 255));
-    QPainter painter(&canvas);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter.drawImage(QRect(0, 0, 44, 44), logo);
-    painter.end();
+    constexpr int alphaCutoff = 32;
+    for (int y = 0; y < scaledLogo.height(); ++y) {
+        const auto* source = reinterpret_cast<const QRgb*>(scaledLogo.constScanLine(y));
+        auto* target = reinterpret_cast<QRgb*>(canvas.scanLine(y));
+        for (int x = 0; x < scaledLogo.width(); ++x) {
+            const QRgb pixel = source[x];
+            target[x] = qAlpha(pixel) < alphaCutoff
+                ? qRgb(255, 0, 255)
+                : qRgb(qRed(pixel), qGreen(pixel), qBlue(pixel));
+        }
+    }
 
     BITMAPINFO info{};
     info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
