@@ -104,10 +104,10 @@ static bool RenderLoLaControl(HWND control, int x, int y)
     return rendered;
 }
 
-static void PositionLoLaControl(HWND control)
+static bool PositionLoLaControl(HWND control)
 {
     const HWND owner = LoLaOwner(control);
-    if (!owner || !IsWindow(owner)) return;
+    if (!owner || !IsWindow(owner)) return false;
     RECT bounds{};
     GetWindowRect(owner, &bounds);
     const auto offsetX = static_cast<int>(reinterpret_cast<std::intptr_t>(GetPropW(control, LoLaOffsetXProperty)));
@@ -117,10 +117,13 @@ static void PositionLoLaControl(HWND control)
         IsLoLaOwnerDeferred(owner);
     const int x = bounds.left + offsetX;
     const int y = bounds.top + offsetY;
-    RenderLoLaControl(control, x, y);
+    const bool rendered = RenderLoLaControl(control, x, y);
     SetWindowPos(control, HWND_TOPMOST, x, y, 52, 52,
                  SWP_NOACTIVATE | SWP_NOREDRAW |
-                 (mouseMode == 2 || deferShow ? SWP_HIDEWINDOW : SWP_SHOWWINDOW));
+                 (mouseMode == 2 || deferShow || !rendered ? SWP_HIDEWINDOW : SWP_SHOWWINDOW));
+    if (!rendered)
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoLa overlay alpha upload failed: %lu", GetLastError());
+    return rendered;
 }
 
 static void SendLoLaShortcut(HWND owner, WORD key)
@@ -255,7 +258,11 @@ static void CreateLoLaControl(SDL_Window* streamWindow)
         return;
     }
     SetTimer(LoLaControlWindow, 1, 250, nullptr);
-    PositionLoLaControl(LoLaControlWindow);
+    if (!PositionLoLaControl(LoLaControlWindow)) {
+        DestroyWindow(LoLaControlWindow);
+        return;
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa overlay created with per-pixel alpha");
 }
 
 static void DestroyLoLaControl()
