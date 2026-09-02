@@ -61,6 +61,17 @@ static bool ApplyLoLaOverlayImage(HWND control, const std::wstring& path)
     return updated;
 }
 
+static bool IsLoLaOwnerDeferred(HWND owner)
+{
+    if (!owner || !IsWindow(owner)) return true;
+    if ((GetWindowLongPtrW(owner, GWL_EXSTYLE) & WS_EX_LAYERED) == 0) return false;
+
+    BYTE alpha = 255;
+    DWORD flags = 0;
+    if (!GetLayeredWindowAttributes(owner, nullptr, &alpha, &flags)) return false;
+    return (flags & LWA_ALPHA) != 0 && alpha == 0;
+}
+
 static void PositionLoLaControl(HWND control)
 {
     const HWND owner = LoLaOwner(control);
@@ -70,7 +81,8 @@ static void PositionLoLaControl(HWND control)
     const auto offsetX = static_cast<int>(reinterpret_cast<std::intptr_t>(GetPropW(control, LoLaOffsetXProperty)));
     const auto offsetY = static_cast<int>(reinterpret_cast<std::intptr_t>(GetPropW(control, LoLaOffsetYProperty)));
     const auto mouseMode = reinterpret_cast<std::uintptr_t>(GetPropW(control, LoLaMouseModeProperty));
-    const bool deferShow = qEnvironmentVariable("LOLA_DEFER_SHOW") == "1";
+    const bool deferShow = qEnvironmentVariable("LOLA_DEFER_SHOW") == "1" &&
+        IsLoLaOwnerDeferred(owner);
     SetWindowPos(control, HWND_TOPMOST, bounds.left + offsetX, bounds.top + offsetY, 52, 52,
                  SWP_NOACTIVATE | (mouseMode == 2 || deferShow ? 0 : SWP_SHOWWINDOW));
 }
@@ -2394,7 +2406,9 @@ void Session::exec()
     m_InputHandler->setWindow(m_Window);
 
 #ifdef Q_OS_WIN
-    if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") CreateLoLaControl(m_Window);
+    if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1" &&
+            qEnvironmentVariable("LOLA_OVERLAY_ENABLED") != "0")
+        CreateLoLaControl(m_Window);
 #endif
 
     QSvgRenderer svgIconRenderer(QString(":/res/moonlight.svg"));
