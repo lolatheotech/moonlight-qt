@@ -322,6 +322,40 @@ void ComputerManager::saveHosts()
     m_DelayedFlushCondition.wakeOne();
 }
 
+void ComputerManager::saveHostsNow()
+{
+    QSettings settings;
+
+    settings.beginWriteArray(SER_HOSTS_BACKUP);
+    {
+        QReadLocker lock(&m_Lock);
+        int i = 0;
+        for (const NvComputer* computer : std::as_const(m_KnownHosts)) {
+            settings.setArrayIndex(i++);
+            computer->serialize(settings, false);
+        }
+    }
+    settings.endArray();
+
+    settings.remove(SER_HOSTS);
+    settings.beginWriteArray(SER_HOSTS);
+    {
+        QReadLocker lock(&m_Lock);
+        int i = 0;
+        for (const NvComputer* computer : std::as_const(m_KnownHosts)) {
+            settings.setArrayIndex(i++);
+            computer->serialize(settings, true);
+        }
+    }
+    settings.endArray();
+    settings.remove(SER_HOSTS_BACKUP);
+    settings.sync();
+
+    if (settings.status() != QSettings::NoError) {
+        qCritical() << "Failed to persist paired host settings:" << settings.status();
+    }
+}
+
 QHostAddress ComputerManager::getBestGlobalAddressV6(QVector<QHostAddress> &addresses)
 {
     for (const QHostAddress& address : addresses) {
@@ -595,9 +629,14 @@ private:
     void run()
     {
         NvPairingManager pairingManager(m_Computer);
+        QSslCertificate pinnedServerCert;
+        {
+            QReadLocker lock(&m_Computer->lock);
+            pinnedServerCert = m_Computer->serverCert;
+        }
 
         try {
-           NvPairingManager::PairState result = pairingManager.pair(m_Computer->appVersion, m_Pin, m_Computer->serverCert);
+           NvPairingManager::PairState result = pairingManager.pair(m_Computer->appVersion, m_Pin, pinnedServerCert);
            switch (result)
            {
            case NvPairingManager::PairState::PIN_WRONG:
@@ -615,8 +654,15 @@ private:
                emit pairingCompleted(m_Computer, tr("Another pairing attempt is already in progress."));
                break;
            case NvPairingManager::PairState::PAIRED:
+               {
+                   QWriteLocker lock(&m_Computer->lock);
+                   m_Computer->serverCert = pinnedServerCert;
+               }
                // Persist the newly pinned server certificate for this host
                m_ComputerManager->saveHost(m_Computer);
+               if (!qEnvironmentVariableIsEmpty("LOLA_PAIRING_PIN")) {
+                   m_ComputerManager->saveHostsNow();
+               }
 
                emit pairingCompleted(m_Computer, nullptr);
                break;

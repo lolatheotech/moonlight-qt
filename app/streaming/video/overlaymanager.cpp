@@ -1,19 +1,26 @@
 #include "overlaymanager.h"
 #include "path.h"
+#include <QFile>
 
 using namespace Overlay;
 
 OverlayManager::OverlayManager() :
     m_Renderer(nullptr),
-    m_FontData(Path::readDataFile("ModeSeven.ttf"))
+    m_FontData([] {
+#ifdef Q_OS_WIN
+        QFile font("C:/Windows/Fonts/segoeui.ttf");
+        if (font.open(QIODevice::ReadOnly)) return font.readAll();
+#endif
+        return Path::readDataFile("ModeSeven.ttf");
+    }())
 {
     memset(m_Overlays, 0, sizeof(m_Overlays));
 
     m_Overlays[OverlayType::OverlayDebug].color = {0xD0, 0xD0, 0x00, 0xFF};
     m_Overlays[OverlayType::OverlayDebug].fontSize = 20;
 
-    m_Overlays[OverlayType::OverlayStatusUpdate].color = {0xCC, 0x00, 0x00, 0xFF};
-    m_Overlays[OverlayType::OverlayStatusUpdate].fontSize = 36;
+    m_Overlays[OverlayType::OverlayStatusUpdate].color = {0xF4, 0xF7, 0xFB, 0xFF};
+    m_Overlays[OverlayType::OverlayStatusUpdate].fontSize = 18;
 
     // While TTF will usually not be initialized here, it is valid for that not to
     // be the case, since Session destruction is deferred and could overlap with
@@ -160,8 +167,8 @@ void OverlayManager::notifyOverlayUpdated(OverlayType type)
                                       m_Overlays[type].text,
                                       m_Overlays[type].color,
                                       {0, 0, 0, 255},
-                                      4,
-                                      1024)
+                                      2,
+                                      720)
             : nullptr);
 
     // Notify the renderer

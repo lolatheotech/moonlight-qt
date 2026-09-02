@@ -14,6 +14,11 @@
 #define VK_NUMPAD0 0x60
 #endif
 
+void SdlInputHandler::toggleLoLaMouseMode()
+{
+    performSpecialKeyCombo(KeyComboToggleMouseMode);
+}
+
 void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
 {
     switch (combo) {
@@ -67,8 +72,8 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         setCaptureActive(false);
 
         if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
-            // Cycle Compatibility -> Desktop -> Immersion -> Compatibility.
-            m_LoLaMouseMode = (m_LoLaMouseMode + 1) % 3;
+            // LoLa exposes only Desktop and Immersion modes.
+            m_LoLaMouseMode = m_LoLaMouseMode == 1 ? 2 : 1;
             m_AbsoluteMouseMode = m_LoLaMouseMode != 2;
             m_MouseCursorCapturedVisibilityState = m_LoLaMouseMode == 1 ? SDL_ENABLE : SDL_DISABLE;
             SDL_ShowCursor(m_MouseCursorCapturedVisibilityState);

@@ -152,6 +152,8 @@ public:
 
     void updatePointerRegionLock();
 
+    void toggleLoLaMouseMode();
+
     static
     QString getUnmappedGamepads();
 

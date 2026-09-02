@@ -215,12 +215,20 @@ NvHTTP::startApp(QString verb,
     QString lolaMonitorQuery;
     bool monitorIndexOk = false;
     bool monitorCountOk = false;
+    bool monitorXOk = false;
+    bool monitorYOk = false;
     const auto monitorIndex = qEnvironmentVariableIntValue("LOLA_MONITOR_INDEX", &monitorIndexOk);
     const auto monitorCount = qEnvironmentVariableIntValue("LOLA_MONITOR_COUNT", &monitorCountOk);
+    const auto monitorX = qEnvironmentVariableIntValue("LOLA_MONITOR_X", &monitorXOk);
+    const auto monitorY = qEnvironmentVariableIntValue("LOLA_MONITOR_Y", &monitorYOk);
     if (monitorIndexOk && monitorCountOk && monitorCount > 0 && monitorCount <= 8 &&
             monitorIndex >= 0 && monitorIndex < monitorCount) {
         lolaMonitorQuery = "&lola_monitor_index=" + QString::number(monitorIndex) +
                            "&lola_monitor_count=" + QString::number(monitorCount);
+        if (monitorXOk && monitorYOk) {
+            lolaMonitorQuery += "&lola_monitor_x=" + QString::number(monitorX) +
+                                "&lola_monitor_y=" + QString::number(monitorY);
+        }
     }
 
     QString response =

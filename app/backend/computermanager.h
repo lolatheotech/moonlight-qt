@@ -233,6 +233,8 @@ public:
 
     void pairHost(NvComputer* computer, QString pin);
 
+    void saveHostsNow();
+
     void quitRunningApp(NvComputer* computer);
 
     QVector<NvComputer*> getComputers();

@@ -126,6 +126,8 @@ public:
     void setShouldExit(bool quitHostApp = false);
 
     void setLoLaMouseMode(int mode);
+    void toggleLoLaFullscreen();
+    void toggleLoLaMouseMode();
 
 signals:
     void stageStarting(QString stage);

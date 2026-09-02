@@ -1,6 +1,9 @@
 #include "session.h"
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <QImage>
+#include <QPainter>
+#include <QTimer>
 #include <SDL_syswm.h>
 #endif
 
@@ -8,7 +11,201 @@
 static constexpr wchar_t LoLaCursorProperty[] = L"LoLaCursorHandle";
 static constexpr wchar_t LoLaCursorProcProperty[] = L"LoLaCursorOldWndProc";
 static constexpr wchar_t LoLaCursorVisibleProperty[] = L"LoLaCursorVisible";
+static constexpr wchar_t LoLaOwnerProperty[] = L"LoLaStreamOwner";
+static constexpr wchar_t LoLaLogoProperty[] = L"LoLaOverlayLogo";
+static constexpr wchar_t LoLaFullscreenProperty[] = L"LoLaWasFullscreen";
+static constexpr wchar_t LoLaMouseModeProperty[] = L"LoLaMouseMode";
+static constexpr wchar_t LoLaOffsetXProperty[] = L"LoLaOffsetX";
+static constexpr wchar_t LoLaOffsetYProperty[] = L"LoLaOffsetY";
+static constexpr wchar_t LoLaDragXProperty[] = L"LoLaDragX";
+static constexpr wchar_t LoLaDragYProperty[] = L"LoLaDragY";
+static constexpr wchar_t LoLaDraggedProperty[] = L"LoLaDragged";
+static constexpr wchar_t LoLaStyleProperty[] = L"LoLaWindowStyle";
+static constexpr wchar_t LoLaRectProperty[] = L"LoLaWindowRect";
+static HWND LoLaControlWindow = nullptr;
 
+static HWND LoLaOwner(HWND control)
+{
+    return reinterpret_cast<HWND>(GetPropW(control, LoLaOwnerProperty));
+}
+
+static bool ApplyLoLaOverlayImage(HWND control, const std::wstring& path)
+{
+    QImage logo(QString::fromStdWString(path));
+    if (logo.isNull()) return false;
+    QImage canvas(52, 52, QImage::Format_ARGB32_Premultiplied);
+    canvas.fill(Qt::transparent);
+    QPainter painter(&canvas);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.drawImage(QRect(4, 4, 44, 44), logo);
+    painter.end();
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = canvas.width();
+    info.bmiHeader.biHeight = -canvas.height();
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr);
+    HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) { if (bitmap) DeleteObject(bitmap); ReleaseDC(nullptr, screen); return false; }
+    memcpy(bits, canvas.constBits(), static_cast<size_t>(canvas.sizeInBytes()));
+    HDC memory = CreateCompatibleDC(screen);
+    const auto previous = SelectObject(memory, bitmap);
+    POINT source{0, 0}; SIZE size{52, 52}; RECT rect{}; GetWindowRect(control, &rect); POINT target{rect.left, rect.top};
+    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    const bool updated = UpdateLayeredWindow(control, screen, &target, &size, memory, &source, 0, &blend, ULW_ALPHA) != FALSE;
+    SelectObject(memory, previous); DeleteDC(memory); ReleaseDC(nullptr, screen);
+    if (updated) SetPropW(control, LoLaLogoProperty, bitmap); else DeleteObject(bitmap);
+    return updated;
+}
+
+static void PositionLoLaControl(HWND control)
+{
+    const HWND owner = LoLaOwner(control);
+    if (!owner || !IsWindow(owner)) return;
+    RECT bounds{};
+    GetWindowRect(owner, &bounds);
+    const auto offsetX = static_cast<int>(reinterpret_cast<std::intptr_t>(GetPropW(control, LoLaOffsetXProperty)));
+    const auto offsetY = static_cast<int>(reinterpret_cast<std::intptr_t>(GetPropW(control, LoLaOffsetYProperty)));
+    const auto mouseMode = reinterpret_cast<std::uintptr_t>(GetPropW(control, LoLaMouseModeProperty));
+    const bool deferShow = qEnvironmentVariable("LOLA_DEFER_SHOW") == "1";
+    SetWindowPos(control, HWND_TOPMOST, bounds.left + offsetX, bounds.top + offsetY, 52, 52,
+                 SWP_NOACTIVATE | (mouseMode == 2 || deferShow ? 0 : SWP_SHOWWINDOW));
+}
+
+static void SendLoLaShortcut(HWND owner, WORD key)
+{
+    if (!owner || !IsWindow(owner)) return;
+    SetForegroundWindow(owner);
+    INPUT input[8]{};
+    const WORD keys[4] = {VK_CONTROL, VK_MENU, VK_SHIFT, key};
+    for (int i = 0; i < 4; i++) {
+        input[i].type = INPUT_KEYBOARD;
+        input[i].ki.wVk = keys[i];
+    }
+    for (int i = 0; i < 4; i++) {
+        input[4 + i].type = INPUT_KEYBOARD;
+        input[4 + i].ki.wVk = keys[3 - i];
+        input[4 + i].ki.dwFlags = KEYEVENTF_KEYUP;
+    }
+    SendInput(8, input, sizeof(INPUT));
+}
+
+static LRESULT CALLBACK LoLaControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_TIMER) {
+        PositionLoLaControl(hwnd);
+        return 0;
+    }
+    if (message == WM_PAINT) { ValidateRect(hwnd, nullptr); return 0; }
+    if (message == WM_LBUTTONDOWN) {
+        SetCapture(hwnd);
+        SetPropW(hwnd, LoLaDragXProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(static_cast<short>(LOWORD(lParam)))));
+        SetPropW(hwnd, LoLaDragYProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(static_cast<short>(HIWORD(lParam)))));
+        RemovePropW(hwnd, LoLaDraggedProperty);
+        return 0;
+    }
+    if (message == WM_MOUSEMOVE && GetCapture() == hwnd && (wParam & MK_LBUTTON)) {
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        const auto dragX = static_cast<int>(reinterpret_cast<std::intptr_t>(GetPropW(hwnd, LoLaDragXProperty)));
+        const auto dragY = static_cast<int>(reinterpret_cast<std::intptr_t>(GetPropW(hwnd, LoLaDragYProperty)));
+        RECT ownerBounds{};
+        GetWindowRect(LoLaOwner(hwnd), &ownerBounds);
+        SetPropW(hwnd, LoLaOffsetXProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(cursor.x - dragX - ownerBounds.left)));
+        SetPropW(hwnd, LoLaOffsetYProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(cursor.y - dragY - ownerBounds.top)));
+        SetPropW(hwnd, LoLaDraggedProperty, reinterpret_cast<HANDLE>(1));
+        PositionLoLaControl(hwnd);
+        return 0;
+    }
+    if (message == WM_LBUTTONUP) {
+        const bool dragged = GetPropW(hwnd, LoLaDraggedProperty) != nullptr;
+        ReleaseCapture();
+        RemovePropW(hwnd, LoLaDraggedProperty);
+        if (!dragged) SendMessageW(hwnd, WM_COMMAND, 1, 0);
+        return 0;
+    }
+    if (message == WM_COMMAND && LOWORD(wParam) == 1) {
+        const HWND owner = LoLaOwner(hwnd);
+        HMENU menu = CreatePopupMenu();
+        const bool fullscreen = GetPropW(owner, LoLaFullscreenProperty) != nullptr;
+        AppendMenuW(menu, MF_STRING, 2, fullscreen ? L"Windowed" : L"Fullscreen");
+        HMENU mouseMenu = CreatePopupMenu();
+        const auto mouseMode = reinterpret_cast<std::uintptr_t>(GetPropW(hwnd, LoLaMouseModeProperty));
+        AppendMenuW(mouseMenu, MF_STRING | (mouseMode == 1 ? MF_CHECKED : MF_UNCHECKED), 3, L"Desktop (local mouse)");
+        AppendMenuW(mouseMenu, MF_STRING | (mouseMode == 2 ? MF_CHECKED : MF_UNCHECKED), 4, L"Immersion (remote mouse)");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(mouseMenu), L"Mouse Mode");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, 5, L"Disconnect");
+        RECT bounds{};
+        GetWindowRect(hwnd, &bounds);
+        const auto selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+                                             bounds.left, bounds.bottom, 0, hwnd, nullptr);
+        DestroyMenu(menu);
+        if (selected == 2) { if (auto session = Session::get()) session->toggleLoLaFullscreen(); }
+        if (selected == 3 && mouseMode != 1) { if (auto session = Session::get()) session->toggleLoLaMouseMode(); }
+        if (selected == 4 && mouseMode != 2) {
+            const auto answer = MessageBoxW(hwnd, L"Immersion mode captures the mouse for remote control and hides the LoLa overlay.\n\nPress Ctrl+Alt+Shift+M to return to Desktop mode. Continue?", L"Enable Immersion mode?", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
+            if (answer == IDOK) { if (auto session = Session::get()) session->toggleLoLaMouseMode(); ShowWindow(hwnd, SW_HIDE); }
+        }
+        if (selected == 5 && owner) PostMessageW(owner, WM_CLOSE, 0, 0);
+        return 0;
+    }
+    if (message == WM_DESTROY) {
+        KillTimer(hwnd, 1);
+        if (const auto logo = reinterpret_cast<HBITMAP>(GetPropW(hwnd, LoLaLogoProperty))) DeleteObject(logo);
+        RemovePropW(hwnd, LoLaLogoProperty);
+        RemovePropW(hwnd, LoLaOwnerProperty);
+        RemovePropW(hwnd, LoLaMouseModeProperty);
+        RemovePropW(hwnd, LoLaOffsetXProperty);
+        RemovePropW(hwnd, LoLaOffsetYProperty);
+        RemovePropW(hwnd, LoLaDragXProperty);
+        RemovePropW(hwnd, LoLaDragYProperty);
+        RemovePropW(hwnd, LoLaDraggedProperty);
+        LoLaControlWindow = nullptr;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+static void CreateLoLaControl(SDL_Window* streamWindow)
+{
+    SDL_SysWMinfo info{};
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(streamWindow, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return;
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSW windowClass{};
+        windowClass.lpfnWndProc = LoLaControlProc;
+        windowClass.hInstance = GetModuleHandleW(nullptr);
+        windowClass.hCursor = LoadCursorW(nullptr, IDC_HAND);
+        windowClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        windowClass.lpszClassName = L"LoLaFloatingControl";
+        registered = RegisterClassW(&windowClass) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    }
+    if (!registered) return;
+    LoLaControlWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED, L"LoLaFloatingControl", L"LoLa Stream Control",
+        WS_POPUP | WS_VISIBLE, 0, 0, 52, 52, info.info.win.window, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!LoLaControlWindow) return;
+    SetPropW(LoLaControlWindow, LoLaOwnerProperty, info.info.win.window);
+    SetPropW(LoLaControlWindow, LoLaOffsetXProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(18)));
+    SetPropW(LoLaControlWindow, LoLaOffsetYProperty, reinterpret_cast<HANDLE>(static_cast<std::intptr_t>(18)));
+
+    const auto initialMouseMode = qEnvironmentVariable("LOLA_MOUSE_MODE").compare("immersion", Qt::CaseInsensitive) == 0 ? 2 : 1;
+    SetPropW(LoLaControlWindow, LoLaMouseModeProperty, reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(initialMouseMode)));
+    const auto logoPath = qEnvironmentVariable("LOLA_OVERLAY_LOGO").toStdWString();
+    ApplyLoLaOverlayImage(LoLaControlWindow, logoPath);
+    SetTimer(LoLaControlWindow, 1, 250, nullptr);
+    PositionLoLaControl(LoLaControlWindow);
+}
+
+static void DestroyLoLaControl()
+{
+    if (LoLaControlWindow) DestroyWindow(LoLaControlWindow);
+    LoLaControlWindow = nullptr;
+}
 static LRESULT CALLBACK LoLaCursorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if (message == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT) {
@@ -1602,6 +1799,12 @@ void Session::toggleFullscreen()
 
     // Actually enter/leave fullscreen
     SDL_SetWindowFullscreen(m_Window, fullScreen ? m_FullScreenFlag : 0);
+#ifdef Q_OS_WIN
+    if (LoLaControlWindow) {
+        if (fullScreen) SetPropW(LoLaOwner(LoLaControlWindow), LoLaFullscreenProperty, reinterpret_cast<HANDLE>(1));
+        else RemovePropW(LoLaOwner(LoLaControlWindow), LoLaFullscreenProperty);
+    }
+#endif
 
 #ifdef Q_OS_DARWIN
     // SDL on macOS has a bug that causes the window size to be reset to crazy
@@ -1950,10 +2153,6 @@ void Session::start()
     m_NextCursorSyncTick = 0;
 
     if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
-        m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate,
-                                           "LoLa  |  Disconnect\nClick here to end all streams");
-        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
-
         const auto mouseMode = qEnvironmentVariable("LOLA_MOUSE_MODE").trimmed().toLower();
         bool monitorIndexOk = false;
         const auto monitorIndex = qEnvironmentVariableIntValue("LOLA_MONITOR_INDEX", &monitorIndexOk);
@@ -1996,18 +2195,37 @@ void Session::start()
     thread->start();
 }
 
+void Session::toggleLoLaFullscreen()
+{
+    toggleFullscreen();
+}
+
+void Session::toggleLoLaMouseMode()
+{
+    if (m_InputHandler) m_InputHandler->toggleLoLaMouseMode();
+}
+
 void Session::setLoLaMouseMode(int mode)
 {
     m_CursorSyncEnabled = mode == 1;
     m_LastCursorSequence = std::numeric_limits<quint64>::max();
     m_NextCursorSyncTick = 0;
+#ifdef Q_OS_WIN
+    if (LoLaControlWindow) {
+        SetPropW(LoLaControlWindow, LoLaMouseModeProperty, reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(mode)));
+        ShowWindow(LoLaControlWindow, mode == 2 ? SW_HIDE : SW_SHOWNOACTIVATE);
+    }
+#endif
 
     const char* name = mode == 1 ? "Desktop" : mode == 2 ? "Immersion" : "Compatibility";
     char message[160];
     SDL_snprintf(message, sizeof(message),
-                 "LoLa  |  Disconnect\nMouse: %s  |  Ctrl+Alt+Shift+M to switch", name);
+                 "Mouse mode: %s\nCtrl+Alt+Shift+M to switch", name);
     m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, message);
     m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+    QTimer::singleShot(3000, this, [this] {
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
+    });
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa mouse mode switched in-stream: %s", name);
 }
 
@@ -2042,6 +2260,26 @@ void Session::exec()
 
     int x, y, width, height;
     getWindowDimensions(x, y, width, height);
+#ifdef Q_OS_WIN
+    // LoLa starts one Moonlight process per client display. Force each SDL
+    // window onto the exact Windows virtual-desktop coordinates supplied by
+    // the dashboard before fullscreen selection occurs. Without this, all
+    // processes inherit the same saved Moonlight window position and overlap.
+    bool lolaPositioned = false;
+    int lolaTargetX = x;
+    int lolaTargetY = y;
+    if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") {
+        bool xOk = false;
+        bool yOk = false;
+        const int requestedX = qEnvironmentVariableIntValue("LOLA_MONITOR_X", &xOk);
+        const int requestedY = qEnvironmentVariableIntValue("LOLA_MONITOR_Y", &yOk);
+        if (xOk && yOk) {
+            x = lolaTargetX = requestedX;
+            y = lolaTargetY = requestedY;
+            lolaPositioned = true;
+        }
+    }
+#endif
 
 #ifdef STEAM_LINK
     // We need a little delay before creating the window or we will trigger some kind
@@ -2092,7 +2330,8 @@ void Session::exec()
     std::string windowName = QString(m_Computer->name + " - Moonlight").toStdString();
 #endif
     if (qEnvironmentVariableIsSet("LOLA_BRANDED_SESSION")) {
-        windowName = "LoLa Remote Desktop";
+        const auto configuredTitle = qEnvironmentVariable("LOLA_STREAM_TITLE").trimmed();
+        windowName = configuredTitle.isEmpty() ? "LoLa Stream" : configuredTitle.toStdString();
     }
 
     m_Window = SDL_CreateWindow(windowName.c_str(),
@@ -2124,8 +2363,39 @@ void Session::exec()
             return;
         }
     }
+#ifdef Q_OS_WIN
+    // A hidden SDL window is not presented by DWM, so render telemetry never
+    // advances and atomic multi-monitor startup deadlocks. Keep the window
+    // renderable while making it fully transparent until LoLa reveals the group.
+    if (qEnvironmentVariable("LOLA_DEFER_SHOW") == "1") {
+        SDL_SetWindowOpacity(m_Window, 0.0f);
+    }
+#endif
+#ifdef Q_OS_WIN
+    if (lolaPositioned) {
+        SDL_SetWindowPosition(m_Window, lolaTargetX, lolaTargetY);
+        SDL_SysWMinfo placementInfo{};
+        SDL_VERSION(&placementInfo.version);
+        if (SDL_GetWindowWMInfo(m_Window, &placementInfo) &&
+                placementInfo.subsystem == SDL_SYSWM_WINDOWS) {
+            SetWindowPos(placementInfo.info.win.window, nullptr,
+                         lolaTargetX, lolaTargetY, 0, 0,
+                         SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE);
+        }
+        int actualX = 0;
+        int actualY = 0;
+        SDL_GetWindowPosition(m_Window, &actualX, &actualY);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa stream window placement requested=(%d,%d) actual=(%d,%d)",
+                    lolaTargetX, lolaTargetY, actualX, actualY);
+    }
+#endif
 
     m_InputHandler->setWindow(m_Window);
+
+#ifdef Q_OS_WIN
+    if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1") CreateLoLaControl(m_Window);
+#endif
 
     QSvgRenderer svgIconRenderer(QString(":/res/moonlight.svg"));
     QImage svgImage(ICON_SIZE, ICON_SIZE, QImage::Format_RGBA8888);
@@ -2155,6 +2425,9 @@ void Session::exec()
     // Enter full screen if requested
     if (m_IsFullScreen) {
         SDL_SetWindowFullscreen(m_Window, m_FullScreenFlag);
+#ifdef Q_OS_WIN
+        if (LoLaControlWindow) SetPropW(LoLaOwner(LoLaControlWindow), LoLaFullscreenProperty, reinterpret_cast<HANDLE>(1));
+#endif
     }
 
     bool needsFirstEnterCapture = false;
@@ -2526,26 +2799,6 @@ void Session::exec()
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
             presence.runCallbacks();
-            if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1" &&
-                    event.button.button == SDL_BUTTON_LEFT &&
-                    event.button.x >= 0 && event.button.x <= 520 &&
-                    event.button.y >= 0 && event.button.y <= 110) {
-                if (event.type == SDL_MOUSEBUTTONDOWN) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoLa in-stream Disconnect selected");
-#ifdef Q_OS_WIN
-                    EnumWindows([](HWND window, LPARAM) -> BOOL {
-                        wchar_t title[128] = {};
-                        GetWindowTextW(window, title, ARRAYSIZE(title));
-                        if (wcscmp(title, L"LoLa Remote Desktop") == 0) {
-                            PostMessageW(window, WM_CLOSE, 0, 0);
-                        }
-                        return TRUE;
-                    }, 0);
-#endif
-                    setShouldExit();
-                }
-                break;
-            }
             m_InputHandler->handleMouseButtonEvent(&event.button);
             break;
         case SDL_MOUSEMOTION:
@@ -2662,6 +2915,9 @@ DispatchDeferredCleanup:
 
     // This must be called after the decoder is deleted, because
     // the renderer may want to interact with the window
+#ifdef Q_OS_WIN
+    DestroyLoLaControl();
+#endif
     SDL_DestroyWindow(m_Window);
 
     if (iconSurface != nullptr) {

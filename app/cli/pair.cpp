@@ -76,19 +76,18 @@ public:
         // Occurs when searched computer is found
         case Event::ComputerFound:
             if (m_State == StateSeekComputer) {
-                if (event.computer->pairState == NvComputer::PS_PAIRED) {
+                if (event.computer->pairState == NvComputer::PS_PAIRED && !lolaHeadless) {
                     m_State = StateFailure;
                     QString msg = QObject::tr("%1 is already paired").arg(event.computer->name);
-                    if (lolaHeadless) {
-                        QCoreApplication::exit(1);
-                    }
-                    else {
-                        emit q->failed(msg);
-                    }
+                    emit q->failed(msg);
                 }
                 else {
                     Q_ASSERT(!m_PredefinedPin.isEmpty());
 
+                    // LoLa's headless repair path is authoritative. A cached server
+                    // certificate can report PS_PAIRED even after the host has lost
+                    // the matching client certificate. Re-run the PIN exchange so
+                    // both sides converge instead of failing on stale local state.
                     m_State = StatePairing;
                     m_ComputerManager->pairHost(event.computer, m_PredefinedPin);
                     emit q->pairing(event.computer->name, m_PredefinedPin);
