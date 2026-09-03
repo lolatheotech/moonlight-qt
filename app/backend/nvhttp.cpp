@@ -11,6 +11,7 @@
 #include <QImageReader>
 #include <QtEndian>
 #include <QNetworkProxy>
+#include <QUrl>
 
 #define FAST_FAIL_TIMEOUT_MS 2000
 #define REQUEST_TIMEOUT_MS 5000
@@ -221,6 +222,7 @@ NvHTTP::startApp(QString verb,
     const auto monitorCount = qEnvironmentVariableIntValue("LOLA_MONITOR_COUNT", &monitorCountOk);
     const auto monitorX = qEnvironmentVariableIntValue("LOLA_MONITOR_X", &monitorXOk);
     const auto monitorY = qEnvironmentVariableIntValue("LOLA_MONITOR_Y", &monitorYOk);
+    const auto monitorTopology = qgetenv("LOLA_MONITOR_TOPOLOGY");
     if (monitorIndexOk && monitorCountOk && monitorCount > 0 && monitorCount <= 8 &&
             monitorIndex >= 0 && monitorIndex < monitorCount) {
         lolaMonitorQuery = "&lola_monitor_index=" + QString::number(monitorIndex) +
@@ -228,6 +230,10 @@ NvHTTP::startApp(QString verb,
         if (monitorXOk && monitorYOk) {
             lolaMonitorQuery += "&lola_monitor_x=" + QString::number(monitorX) +
                                 "&lola_monitor_y=" + QString::number(monitorY);
+        }
+        if (!monitorTopology.isEmpty() && monitorTopology.size() <= 4096) {
+            lolaMonitorQuery += "&lola_monitor_topology=" +
+                                QString::fromLatin1(QUrl::toPercentEncoding(QString::fromUtf8(monitorTopology)));
         }
     }
 

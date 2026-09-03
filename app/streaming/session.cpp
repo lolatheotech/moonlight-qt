@@ -2,6 +2,7 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <QImage>
+#include <QFileInfo>
 #include <QPainter>
 #include <QTimer>
 #include <SDL_syswm.h>
@@ -417,6 +418,26 @@ void Session::clStageFailed(int stage, int errorCode)
 
 void Session::clConnectionTerminated(int errorCode)
 {
+    const QString expectedStopFile = qEnvironmentVariable("LOLA_EXPECTED_STOP_FILE");
+    if (qEnvironmentVariable("LOLA_BRANDED_SESSION") == "1" &&
+        !expectedStopFile.isEmpty() &&
+        QFileInfo::exists(expectedStopFile)) {
+        // The LoLa dashboard marks all monitor processes before asking any one
+        // of them to end the host session. Apollo's resulting disconnect is
+        // therefore expected and must not surface as Moonlight error -1.
+        s_ActiveSession->m_UnexpectedTermination = false;
+        SDL_LogInfo(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "LoLa expected disconnect acknowledged without an error dialog: %d",
+            errorCode
+        );
+        SDL_Event event;
+        event.type = SDL_QUIT;
+        event.quit.timestamp = SDL_GetTicks();
+        SDL_PushEvent(&event);
+        return;
+    }
+
     unsigned int portFlags = LiGetPortFlagsFromTerminationErrorCode(errorCode);
     s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
 
