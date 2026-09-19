@@ -1,6 +1,7 @@
 #include "session.h"
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include "lolaownertracking.h"
 #include <QImage>
 #include <QFileInfo>
 #include <QPainter>
@@ -24,6 +25,7 @@ static constexpr wchar_t LoLaDraggedProperty[] = L"LoLaDragged";
 static constexpr wchar_t LoLaStyleProperty[] = L"LoLaWindowStyle";
 static constexpr wchar_t LoLaRectProperty[] = L"LoLaWindowRect";
 static HWND LoLaControlWindow = nullptr;
+static bool EnsureLoLaOwnerWindowProc(HWND owner);
 
 static HWND LoLaOwner(HWND control)
 {
@@ -258,6 +260,12 @@ static void CreateLoLaControl(SDL_Window* streamWindow)
         DestroyWindow(LoLaControlWindow);
         return;
     }
+    // Follow native owner moves synchronously, including the Windows modal
+    // move/size loop. The timer remains a fallback for deferred reveal state.
+    if (!EnsureLoLaOwnerWindowProc(info.info.win.window)) {
+        DestroyWindow(LoLaControlWindow);
+        return;
+    }
     SetTimer(LoLaControlWindow, 1, 250, nullptr);
     if (!PositionLoLaControl(LoLaControlWindow)) {
         DestroyWindow(LoLaControlWindow);
@@ -286,8 +294,23 @@ static LRESULT CALLBACK LoLaCursorWindowProc(HWND hwnd, UINT message, WPARAM wPa
         }
     }
     const auto previous = reinterpret_cast<WNDPROC>(GetPropW(hwnd, LoLaCursorProcProperty));
-    return previous ? CallWindowProcW(previous, hwnd, message, wParam, lParam)
-                    : DefWindowProcW(hwnd, message, wParam, lParam);
+    return DispatchLoLaOwnerMessage(previous, hwnd, message, wParam, lParam,
+                                   LoLaControlWindow, LoLaOwner, PositionLoLaControl);
+}
+
+static bool EnsureLoLaOwnerWindowProc(HWND hwnd)
+{
+    const auto current = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
+    if (current == LoLaCursorWindowProc) return true;
+    if (!current || !SetPropW(hwnd, LoLaCursorProcProperty, reinterpret_cast<HANDLE>(current)))
+        return false;
+    SetLastError(0);
+    if (!SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(LoLaCursorWindowProc)) &&
+            GetLastError() != 0) {
+        RemovePropW(hwnd, LoLaCursorProcProperty);
+        return false;
+    }
+    return true;
 }
 
 static void SetLoLaWindowCursor(SDL_Window* window, HCURSOR cursor, bool visible)
@@ -299,14 +322,8 @@ static void SetLoLaWindowCursor(SDL_Window* window, HCURSOR cursor, bool visible
     SetPropW(hwnd, LoLaCursorProperty, cursor);
     SetPropW(hwnd, LoLaCursorVisibleProperty,
              reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(visible ? 1 : 2)));
-    const auto current = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
-    if (current != LoLaCursorWindowProc) {
-        const auto previous = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
-            hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(LoLaCursorWindowProc)));
-        if (previous && previous != LoLaCursorWindowProc) {
-            SetPropW(hwnd, LoLaCursorProcProperty, reinterpret_cast<HANDLE>(previous));
-        }
-    }
+    EnsureLoLaOwnerWindowProc(hwnd);
+
     SetCursor(visible ? cursor : nullptr);
 }
 

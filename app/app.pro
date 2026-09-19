@@ -207,6 +207,7 @@ SOURCES += \
     wm.cpp
 
 HEADERS += \
+    streaming/lolaownertracking.h \
     SDL_compat.h \
     backend/nvaddress.h \
     backend/nvapp.h \
