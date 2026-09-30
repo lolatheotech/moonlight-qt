@@ -7,7 +7,7 @@
 
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSaveFile>
+#include "lola-telemetry-file.h"
 #include <QJsonValue>
 #include <QCoreApplication>
 
@@ -104,7 +104,7 @@ static void exportLoLaTelemetry(const VIDEO_STATS& stats, uint64_t decoderEpoch,
         {"renderedFps", stats.renderedFps}
     };
 
-    QSaveFile output(path);
+    LoLaTelemetryFile output(path);
     if (!output.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "Unable to open LoLa telemetry file: %s",
