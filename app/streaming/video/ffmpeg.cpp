@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QSaveFile>
 #include <QJsonValue>
+#include <QCoreApplication>
 
 extern "C" {
 #include <libavutil/mastering_display_metadata.h>
@@ -64,15 +65,33 @@ extern "C" {
 
 #define FAILED_DECODES_RESET_THRESHOLD 20
 
-static void exportLoLaTelemetry(const VIDEO_STATS& stats)
+static std::atomic<uint64_t> lolaDecoderEpoch{0};
+static std::atomic<uint64_t> lolaSampleSequence{0};
+
+static void exportLoLaTelemetry(const VIDEO_STATS& stats, uint64_t decoderEpoch,
+                                uint64_t transitionsAtStart, uint64_t transitionsAtEnd)
 {
     const QString path = qEnvironmentVariable("LOLA_TELEMETRY_FILE");
     if (path.isEmpty() || stats.totalFrames == 0) {
         return;
     }
 
+    // LiGetMicroseconds is the statistics clock; SDL QPC pairs this export with
+    // the supervisor/observer on the same Windows machine, never a remote clock.
+    const auto windowEndUs = LiGetMicroseconds();
+    const auto exportQpc = SDL_GetPerformanceCounter();
     QJsonObject payload {
-        {"schemaVersion", 1},
+        {"schemaVersion", 2},
+        {"producerPid", QCoreApplication::applicationPid()},
+        {"sampleSequence", (qint64)(lolaSampleSequence.fetch_add(1, std::memory_order_relaxed) + 1)},
+        {"decoderEpoch", (qint64)decoderEpoch},
+        {"windowStartUs", (qint64)stats.measurementStartUs},
+        {"windowEndUs", (qint64)windowEndUs},
+        {"windowDurationUs", (qint64)(windowEndUs - stats.measurementStartUs)},
+        {"exportQpc", (qint64)exportQpc},
+        {"qpcFrequency", (qint64)SDL_GetPerformanceFrequency()},
+        {"windowTransitionsStart", (qint64)transitionsAtStart},
+        {"windowTransitionsEnd", (qint64)transitionsAtEnd},
         {"roundTripLatencyMs", stats.lastRtt == 0 ? QJsonValue() : QJsonValue((int)stats.lastRtt)},
         {"packetLossPercent", (double)stats.networkDroppedFrames / stats.totalFrames * 100.0},
         {"framesDropped", (qint64)(stats.networkDroppedFrames + stats.pacerDroppedFrames)},
@@ -122,6 +141,7 @@ void FFmpegVideoDecoder::setHdrMode(bool enabled)
 
 bool FFmpegVideoDecoder::notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO info)
 {
+    m_LolaWindowTransitions.fetch_add(1, std::memory_order_relaxed);
     return m_FrontendRenderer->notifyWindowChanged(info);
 }
 
@@ -268,6 +288,7 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
       m_ConsecutiveFailedDecodes(0),
       m_Pacer(nullptr),
       m_BwTracker(10, 250),
+      m_LolaDecoderEpoch(lolaDecoderEpoch.fetch_add(1, std::memory_order_relaxed) + 1),
       m_FramesIn(0),
       m_FramesOut(0),
       m_LastFrameNumber(0),
@@ -2147,6 +2168,7 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 
     if (!m_LastFrameNumber) {
         m_ActiveWndVideoStats.measurementStartUs = LiGetMicroseconds();
+        m_LolaWindowTransitionStart = m_LolaWindowTransitions.load(std::memory_order_relaxed);
         m_LastFrameNumber = du->frameNumber;
     }
     else {
@@ -2164,7 +2186,8 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
         // debug overlay when this process is supervised by LoLa.
         VIDEO_STATS currentWndStats = {};
         addVideoStats(m_ActiveWndVideoStats, currentWndStats);
-        exportLoLaTelemetry(currentWndStats);
+        exportLoLaTelemetry(currentWndStats, m_LolaDecoderEpoch, m_LolaWindowTransitionStart,
+                            m_LolaWindowTransitions.load(std::memory_order_relaxed));
 
         // Update overlay stats if it's enabled
         if (Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayDebug)) {
@@ -2185,6 +2208,7 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
         SDL_memcpy(&m_LastWndVideoStats, &m_ActiveWndVideoStats, sizeof(m_ActiveWndVideoStats));
         SDL_zero(m_ActiveWndVideoStats);
         m_ActiveWndVideoStats.measurementStartUs = LiGetMicroseconds();
+        m_LolaWindowTransitionStart = m_LolaWindowTransitions.load(std::memory_order_relaxed);
     }
 
     if (du->frameHostProcessingLatency != 0) {

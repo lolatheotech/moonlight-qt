@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <atomic>
 #include <QQueue>
 #include <set>
 
@@ -114,6 +115,10 @@ private:
     int m_ConsecutiveFailedDecodes;
     Pacer* m_Pacer;
     BandwidthTracker m_BwTracker;
+    // Per-decoder identity and cross-thread window-transition counter.
+    const uint64_t m_LolaDecoderEpoch;
+    std::atomic<uint64_t> m_LolaWindowTransitions{0};
+    uint64_t m_LolaWindowTransitionStart = 0;
     VIDEO_STATS m_ActiveWndVideoStats;
     VIDEO_STATS m_LastWndVideoStats;
     VIDEO_STATS m_GlobalVideoStats;
