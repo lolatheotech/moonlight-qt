@@ -80,10 +80,11 @@ static void exportLoLaTelemetry(const VIDEO_STATS& stats, uint64_t decoderEpoch,
     // the supervisor/observer on the same Windows machine, never a remote clock.
     const auto windowEndUs = LiGetMicroseconds();
     const auto exportQpc = SDL_GetPerformanceCounter();
+    const auto sequence = lolaSampleSequence.fetch_add(1, std::memory_order_relaxed) + 1;
     QJsonObject payload {
         {"schemaVersion", 2},
         {"producerPid", QCoreApplication::applicationPid()},
-        {"sampleSequence", (qint64)(lolaSampleSequence.fetch_add(1, std::memory_order_relaxed) + 1)},
+        {"sampleSequence", (qint64)sequence},
         {"decoderEpoch", (qint64)decoderEpoch},
         {"windowStartUs", (qint64)stats.measurementStartUs},
         {"windowEndUs", (qint64)windowEndUs},
@@ -110,8 +111,24 @@ static void exportLoLaTelemetry(const VIDEO_STATS& stats, uint64_t decoderEpoch,
                     qUtf8Printable(output.errorString()));
         return;
     }
+    const auto openDoneQpc = SDL_GetPerformanceCounter();
     output.write(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    if (!output.commit()) {
+    const auto writeDoneQpc = SDL_GetPerformanceCounter();
+    const bool committed = output.commit();
+    const auto commitDoneQpc = SDL_GetPerformanceCounter();
+    const auto frequency = SDL_GetPerformanceFrequency();
+    const auto totalUs = (commitDoneQpc - exportQpc) * 1000000 / frequency;
+    // Bounded diagnostic: only slow exports, never per-frame logging or raw paths.
+    if (totalUs >= 50000) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "LoLa telemetry export timing: %llu %llu %llu %llu %llu %llu",
+                    (unsigned long long)sequence,
+                    (unsigned long long)((openDoneQpc - exportQpc) * 1000000 / frequency),
+                    (unsigned long long)((writeDoneQpc - openDoneQpc) * 1000000 / frequency),
+                    (unsigned long long)((commitDoneQpc - writeDoneQpc) * 1000000 / frequency),
+                    (unsigned long long)totalUs, (unsigned long long)committed);
+    }
+    if (!committed) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "Unable to publish LoLa telemetry: %s",
                     qUtf8Printable(output.errorString()));
